@@ -13,7 +13,7 @@ InstaMonitor is a lightweight network monitoring system for OpenWrt routers that
 - ✅ **Privacy-Focused**: Only analyzes metadata, never decrypts content
 - ✅ **Lightweight**: Optimized for resource-constrained routers
 - ✅ **Automatic Classification**: ML-inspired pattern recognition
-- ✅ **Persistent Storage**: SQLite database for historical analysis
+- ✅ **CSV Storage**: Simple, portable files for easy analysis
 - ✅ **Easy Installation**: One-command setup
 - ✅ **Detailed Statistics**: Per-device, per-platform reporting
 - ✅ **Configurable**: Adjustable thresholds and settings
@@ -31,9 +31,9 @@ InstaMonitor is a lightweight network monitoring system for OpenWrt routers that
     ↓
 [Traffic Classification]
     ↓
-[database.py] → [SQLite Database]
+[database.py] → [CSV Files: flows.csv, hourly_stats.csv, daily_stats.csv]
     ↓
-[instamonitor-stats] → [Reports/CSV]
+[instamonitor-stats] → [Reports/Export CSV]
 ```
 
 ### Classification Logic
@@ -74,11 +74,12 @@ InstaMonitor is a lightweight network monitoring system for OpenWrt routers that
 - Written in Python 3 for maintainability
 
 ### 3. Database Module (`database.py`)
-- SQLite storage (lightweight)
-- Tracks devices, sessions, traffic stats
-- Daily summaries and historical data
+- CSV file storage (portable and simple)
+- Tracks devices, flows, hourly and daily stats
+- Automatic aggregation
+- File locking for concurrent access
 - Automatic cleanup and rotation
-- Optimized queries and indexes
+- No external dependencies
 
 ### 4. Statistics Tool (`instamonitor-stats`)
 - Command-line reporting
@@ -107,11 +108,12 @@ instamonitor/
 ├── QUICKSTART.md          # 5-minute setup guide
 ├── USAGE.md               # Detailed usage instructions
 ├── TROUBLESHOOTING.md     # Problem-solving guide
+├── CSV_FORMAT.md          # CSV file format documentation
 ├── LICENSE                # MIT license
 ├── config.conf            # Main configuration
 ├── capture.sh             # Packet capture script
 ├── analyzer.py            # Traffic analysis engine
-├── database.py            # Database management
+├── database.py            # CSV file management
 ├── install.sh             # Installation script
 ├── update_ips.sh          # IP update helper
 ├── instagram_ips.txt      # Instagram IP ranges
@@ -182,10 +184,15 @@ tail -f /var/log/instamonitor.log
   - Timing patterns
 
 ### Database Schema
-- **Tables**: devices, sessions, traffic_stats, flow_classifications, daily_summaries
-- **Indexes**: Optimized for time-series queries
-- **Rotation**: Automatic when exceeding size limit
-- **Cleanup**: Configurable retention period
+
+CSV files with the following structure:
+
+- **devices.csv**: Device registry
+- **flows.csv**: Detailed flow classifications  
+- **hourly_stats.csv**: Hourly aggregations
+- **daily_stats.csv**: Daily summaries
+
+See [CSV_FORMAT.md](CSV_FORMAT.md) for complete format documentation.
 
 ## Privacy & Legal Considerations
 
@@ -298,7 +305,7 @@ Built with:
 - OpenWrt (OS)
 - Python 3 (Analysis)
 - tcpdump (Capture)
-- SQLite (Storage)
+- CSV files (Storage)
 - Shell scripts (Glue)
 
 ## Conclusion

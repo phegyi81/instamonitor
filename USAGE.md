@@ -290,41 +290,51 @@ sqlite3 /var/lib/instamonitor/usage.db "VACUUM;"
 
 ### CSV Export
 
+The data is already in CSV format! The files are located in `/var/lib/instamonitor/`:
+
 ```bash
-# Export all data
+# Copy all CSV files to your computer
+scp root@router:/var/lib/instamonitor/*.csv ~/Downloads/
+
+# List the CSV files
+ssh root@router "ls -lh /var/lib/instamonitor/"
+
+# View daily stats directly
+ssh root@router "cat /var/lib/instamonitor/daily_stats.csv"
+```
+
+### Using instamonitor-stats Export
+
+```bash
+# Export aggregated data
 instamonitor-stats --export /tmp/all_stats.csv
 
 # Export specific device
 instamonitor-stats --device 192.168.1.100 --week --export /tmp/device_stats.csv
 ```
 
-### Direct Database Access
+### Direct CSV Access
 
 ```bash
-# Open database
-sqlite3 /var/lib/instamonitor/usage.db
+# Open in Excel/Google Sheets
+# Simply open the CSV files directly
 
-# Example queries:
-# List all devices
-SELECT * FROM devices;
+# View in terminal with column formatting
+column -t -s, /var/lib/instamonitor/daily_stats.csv | less
 
-# Total usage per device today
-SELECT d.ip_address, 
-       SUM(s.total_duration_seconds) as total_seconds,
-       SUM(s.total_bytes) as total_bytes
-FROM daily_summaries s
-JOIN devices d ON s.device_id = d.id
-WHERE s.date = date('now')
-GROUP BY d.ip_address;
-
-# Activity breakdown
-SELECT activity_type, 
-       COUNT(*) as sessions,
-       AVG(duration_seconds) as avg_duration
-FROM sessions
-WHERE date(start_time) = date('now')
-GROUP BY activity_type;
+# Get specific platform data
+grep "instagram" /var/lib/instamonitor/daily_stats.csv
 ```
+
+### Import Into Analysis Tools
+
+See [CSV_FORMAT.md](CSV_FORMAT.md) for detailed examples of importing into:
+- Excel / Google Sheets
+- Python pandas
+- R
+- SQLite
+- Gnuplot
+- And more!
 
 ### Automated Reports
 

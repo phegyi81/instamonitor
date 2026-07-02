@@ -1,372 +1,377 @@
 #!/usr/bin/env python3
 """
-InstaMonitor Database Module
-Handles storage and retrieval of traffic analysis data
+InstaMonitor CSV Storage Module
+Handles storage and retrieval of traffic analysis data in CSV format
 """
 
-import sqlite3
+import csv
 import os
 from datetime import datetime
+from collections import defaultdict
+import fcntl
 from contextlib import contextmanager
 
 
 class InstaMonitorDB:
-    """Database handler for InstaMonitor"""
+    """CSV-based storage handler for InstaMonitor"""
     
-    def __init__(self, db_path):
-        """Initialize database connection"""
-        self.db_path = db_path
+    def __init__(self, data_dir):
+        """Initialize CSV storage"""
+        self.data_dir = data_dir
         
         # Create directory if it doesn't exist
-        db_dir = os.path.dirname(db_path)
-        if db_dir and not os.path.exists(db_dir):
-            os.makedirs(db_dir)
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir)
         
-        self._init_database()
+        # CSV file paths
+        self.devices_file = os.path.join(data_dir, 'devices.csv')
+        self.flows_file = os.path.join(data_dir, 'flows.csv')
+        self.hourly_file = os.path.join(data_dir, 'hourly_stats.csv')
+        self.daily_file = os.path.join(data_dir, 'daily_stats.csv')
+        
+        self._init_csv_files()
+        self.device_cache = {}
+        self._load_devices()
     
     @contextmanager
-    def get_connection(self):
-        """Get database connection as context manager"""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
+    def _lock_file(self, filepath):
+        """File locking context manager for concurrent access"""
+        lockfile = filepath + '.lock'
+        lock = open(lockfile, 'w')
         try:
-            yield conn
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            yield
         finally:
-            conn.close()
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            lock.close()
     
-    def _init_database(self):
-        """Initialize database schema"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Devices table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS devices (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ip_address TEXT UNIQUE NOT NULL,
-                    mac_address TEXT,
-                    device_name TEXT,
-                    first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Sessions table - represents a continuous period of activity
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS sessions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    device_id INTEGER NOT NULL,
-                    platform TEXT NOT NULL,  -- instagram or tiktok
-                    activity_type TEXT NOT NULL,  -- chat, video_conference, video_scroll
-                    start_time TIMESTAMP NOT NULL,
-                    end_time TIMESTAMP,
-                    duration_seconds INTEGER,
-                    packets_sent INTEGER DEFAULT 0,
-                    packets_received INTEGER DEFAULT 0,
-                    bytes_sent INTEGER DEFAULT 0,
-                    bytes_received INTEGER DEFAULT 0,
-                    remote_ip TEXT,
-                    FOREIGN KEY (device_id) REFERENCES devices (id)
-                )
-            ''')
-            
-            # Traffic statistics - minute-by-minute aggregation
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS traffic_stats (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TIMESTAMP NOT NULL,
-                    device_id INTEGER NOT NULL,
-                    platform TEXT NOT NULL,
-                    activity_type TEXT NOT NULL,
-                    packets INTEGER DEFAULT 0,
-                    bytes INTEGER DEFAULT 0,
-                    flows INTEGER DEFAULT 0,
-                    FOREIGN KEY (device_id) REFERENCES devices (id)
-                )
-            ''')
-            
-            # Flow classifications - detailed flow-level data
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS flow_classifications (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    device_id INTEGER NOT NULL,
-                    remote_ip TEXT NOT NULL,
-                    platform TEXT,
-                    activity_type TEXT NOT NULL,
-                    duration_seconds REAL,
-                    packet_count INTEGER,
-                    bytes_up INTEGER,
-                    bytes_down INTEGER,
-                    avg_packet_size REAL,
-                    packet_rate REAL,
-                    bidirectional_ratio REAL,
-                    FOREIGN KEY (device_id) REFERENCES devices (id)
-                )
-            ''')
-            
-            # Daily summaries
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS daily_summaries (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    date DATE NOT NULL,
-                    device_id INTEGER NOT NULL,
-                    platform TEXT NOT NULL,
-                    activity_type TEXT NOT NULL,
-                    total_duration_seconds INTEGER DEFAULT 0,
-                    total_bytes INTEGER DEFAULT 0,
-                    session_count INTEGER DEFAULT 0,
-                    UNIQUE(date, device_id, platform, activity_type),
-                    FOREIGN KEY (device_id) REFERENCES devices (id)
-                )
-            ''')
-            
-            # Create indices for better query performance
-            cursor.execute('''
-                CREATE INDEX IF NOT EXISTS idx_sessions_device_time 
-                ON sessions(device_id, start_time)
-            ''')
-            
-            cursor.execute('''
-                CREATE INDEX IF NOT EXISTS idx_traffic_stats_timestamp 
-                ON traffic_stats(timestamp, device_id)
-            ''')
-            
-            cursor.execute('''
-                CREATE INDEX IF NOT EXISTS idx_flow_timestamp 
-                ON flow_classifications(timestamp, device_id)
-            ''')
-            
-            cursor.execute('''
-                CREATE INDEX IF NOT EXISTS idx_daily_summaries_date 
-                ON daily_summaries(date, device_id)
-            ''')
-            
-            conn.commit()
+    def _init_csv_files(self):
+        """Initialize CSV files with headers if they don't exist"""
+        
+        # Devices CSV
+        if not os.path.exists(self.devices_file):
+            with open(self.devices_file, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['ip_address', 'mac_address', 'device_name', 
+                               'first_seen', 'last_seen'])
+        
+        # Flows CSV (detailed flow-level data)
+        if not os.path.exists(self.flows_file):
+            with open(self.flows_file, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['timestamp', 'device_ip', 'remote_ip', 'platform',
+                               'activity_type', 'duration_seconds', 'packet_count',
+                               'bytes_up', 'bytes_down', 'avg_packet_size',
+                               'packet_rate', 'bidirectional_ratio'])
+        
+        # Hourly stats CSV (aggregated per hour)
+        if not os.path.exists(self.hourly_file):
+            with open(self.hourly_file, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['timestamp', 'device_ip', 'platform', 'activity_type',
+                               'total_duration_seconds', 'total_bytes', 'flow_count'])
+        
+        # Daily stats CSV (aggregated per day)
+        if not os.path.exists(self.daily_file):
+            with open(self.daily_file, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['date', 'device_ip', 'platform', 'activity_type',
+                               'total_duration_seconds', 'total_bytes', 'flow_count'])
+    
+    def _load_devices(self):
+        """Load devices into memory cache"""
+        if os.path.exists(self.devices_file):
+            with open(self.devices_file, 'r') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    self.device_cache[row['ip_address']] = row
     
     def get_or_create_device(self, ip_address, mac_address=None, device_name=None):
-        """Get device ID or create new device entry"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
+        """Get or create device entry"""
+        now = datetime.now().isoformat()
+        
+        # Check cache first
+        if ip_address in self.device_cache:
+            # Update last seen
+            with self._lock_file(self.devices_file):
+                self._update_device_last_seen(ip_address, now)
+            return ip_address
+        
+        # Add new device
+        with self._lock_file(self.devices_file):
+            with open(self.devices_file, 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([ip_address, mac_address or '', device_name or '', 
+                               now, now])
             
-            # Try to find existing device
-            cursor.execute('SELECT id FROM devices WHERE ip_address = ?', (ip_address,))
-            row = cursor.fetchone()
-            
-            if row:
-                device_id = row[0]
-                # Update last seen
-                cursor.execute(
-                    'UPDATE devices SET last_seen = CURRENT_TIMESTAMP WHERE id = ?',
-                    (device_id,)
-                )
-            else:
-                # Create new device
-                cursor.execute(
-                    '''INSERT INTO devices (ip_address, mac_address, device_name) 
-                       VALUES (?, ?, ?)''',
-                    (ip_address, mac_address, device_name)
-                )
-                device_id = cursor.lastrowid
-            
-            conn.commit()
-            return device_id
+            self.device_cache[ip_address] = {
+                'ip_address': ip_address,
+                'mac_address': mac_address or '',
+                'device_name': device_name or '',
+                'first_seen': now,
+                'last_seen': now
+            }
+        
+        return ip_address
+    
+    def _update_device_last_seen(self, ip_address, timestamp):
+        """Update last seen timestamp for a device"""
+        # Read all devices
+        devices = []
+        with open(self.devices_file, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row['ip_address'] == ip_address:
+                    row['last_seen'] = timestamp
+                devices.append(row)
+        
+        # Write back
+        with open(self.devices_file, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=['ip_address', 'mac_address', 
+                                                   'device_name', 'first_seen', 'last_seen'])
+            writer.writeheader()
+            writer.writerows(devices)
+        
+        # Update cache
+        if ip_address in self.device_cache:
+            self.device_cache[ip_address]['last_seen'] = timestamp
     
     def record_flow_classification(self, device_ip, remote_ip, platform, 
                                    activity_type, duration, packet_count,
                                    bytes_up, bytes_down, avg_packet_size,
                                    packet_rate, bidirectional_ratio):
         """Record a classified flow"""
-        device_id = self.get_or_create_device(device_ip)
+        self.get_or_create_device(device_ip)
         
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                INSERT INTO flow_classifications 
-                (device_id, remote_ip, platform, activity_type, duration_seconds,
-                 packet_count, bytes_up, bytes_down, avg_packet_size,
-                 packet_rate, bidirectional_ratio)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (device_id, remote_ip, platform, activity_type, duration,
-                  packet_count, bytes_up, bytes_down, avg_packet_size,
-                  packet_rate, bidirectional_ratio))
-            
-            conn.commit()
-            return cursor.lastrowid
-    
-    def update_traffic_stats(self, device_ip, platform, activity_type, 
-                            packets, bytes_transferred, flows=1):
-        """Update minute-by-minute traffic statistics"""
-        device_id = self.get_or_create_device(device_ip)
+        timestamp = datetime.now().isoformat()
         
-        # Round timestamp to nearest minute
-        timestamp = datetime.now().replace(second=0, microsecond=0)
+        with self._lock_file(self.flows_file):
+            with open(self.flows_file, 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([timestamp, device_ip, remote_ip, platform or '',
+                               activity_type, f'{duration:.2f}', packet_count,
+                               bytes_up, bytes_down, f'{avg_packet_size:.2f}',
+                               f'{packet_rate:.2f}', f'{bidirectional_ratio:.3f}'])
         
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Check if entry exists for this minute
-            cursor.execute('''
-                SELECT id, packets, bytes, flows FROM traffic_stats
-                WHERE timestamp = ? AND device_id = ? 
-                  AND platform = ? AND activity_type = ?
-            ''', (timestamp, device_id, platform, activity_type))
-            
-            row = cursor.fetchone()
-            
-            if row:
-                # Update existing entry
-                cursor.execute('''
-                    UPDATE traffic_stats 
-                    SET packets = packets + ?,
-                        bytes = bytes + ?,
-                        flows = flows + ?
-                    WHERE id = ?
-                ''', (packets, bytes_transferred, flows, row[0]))
-            else:
-                # Insert new entry
-                cursor.execute('''
-                    INSERT INTO traffic_stats 
-                    (timestamp, device_id, platform, activity_type, 
-                     packets, bytes, flows)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (timestamp, device_id, platform, activity_type,
-                      packets, bytes_transferred, flows))
-            
-            conn.commit()
+        # Update aggregated stats
+        self._update_hourly_stats(device_ip, platform or 'unknown', activity_type,
+                                 duration, bytes_up + bytes_down)
+        self._update_daily_stats(device_ip, platform or 'unknown', activity_type,
+                                duration, bytes_up + bytes_down)
     
-    def start_session(self, device_ip, platform, activity_type, remote_ip):
-        """Start a new activity session"""
-        device_id = self.get_or_create_device(device_ip)
+    def _update_hourly_stats(self, device_ip, platform, activity_type, 
+                            duration, bytes_total):
+        """Update hourly aggregated statistics"""
+        # Round to current hour
+        current_hour = datetime.now().replace(minute=0, second=0, microsecond=0).isoformat()
         
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                INSERT INTO sessions 
-                (device_id, platform, activity_type, start_time, remote_ip)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
-            ''', (device_id, platform, activity_type, remote_ip))
-            
-            conn.commit()
-            return cursor.lastrowid
-    
-    def end_session(self, session_id, packets_sent, packets_received,
-                   bytes_sent, bytes_received):
-        """End an activity session and update statistics"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                UPDATE sessions
-                SET end_time = CURRENT_TIMESTAMP,
-                    duration_seconds = CAST((julianday(CURRENT_TIMESTAMP) - julianday(start_time)) * 86400 AS INTEGER),
-                    packets_sent = ?,
-                    packets_received = ?,
-                    bytes_sent = ?,
-                    bytes_received = ?
-                WHERE id = ?
-            ''', (packets_sent, packets_received, bytes_sent, 
-                  bytes_received, session_id))
-            
-            conn.commit()
-    
-    def update_daily_summary(self, device_ip, platform, activity_type, 
-                            duration_seconds, bytes_transferred):
-        """Update daily summary statistics"""
-        device_id = self.get_or_create_device(device_ip)
-        today = datetime.now().date()
+        # Read existing hourly stats
+        hourly_stats = defaultdict(lambda: {'duration': 0, 'bytes': 0, 'flows': 0})
         
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
+        with self._lock_file(self.hourly_file):
+            if os.path.exists(self.hourly_file):
+                with open(self.hourly_file, 'r') as f:
+                    reader = csv.DictReader(f)
+                    rows = []
+                    for row in reader:
+                        key = (row['timestamp'], row['device_ip'], row['platform'], 
+                              row['activity_type'])
+                        if key[0] == current_hour and key[1] == device_ip and \
+                           key[2] == platform and key[3] == activity_type:
+                            # Update this entry
+                            hourly_stats[key]['duration'] = float(row['total_duration_seconds']) + duration
+                            hourly_stats[key]['bytes'] = int(row['total_bytes']) + bytes_total
+                            hourly_stats[key]['flows'] = int(row['flow_count']) + 1
+                        else:
+                            # Keep existing entry
+                            rows.append(row)
             
-            cursor.execute('''
-                INSERT INTO daily_summaries 
-                (date, device_id, platform, activity_type, 
-                 total_duration_seconds, total_bytes, session_count)
-                VALUES (?, ?, ?, ?, ?, ?, 1)
-                ON CONFLICT(date, device_id, platform, activity_type) 
-                DO UPDATE SET
-                    total_duration_seconds = total_duration_seconds + ?,
-                    total_bytes = total_bytes + ?,
-                    session_count = session_count + 1
-            ''', (today, device_id, platform, activity_type, 
-                  duration_seconds, bytes_transferred,
-                  duration_seconds, bytes_transferred))
+            # Add current hour if not exists
+            key = (current_hour, device_ip, platform, activity_type)
+            if key not in hourly_stats:
+                hourly_stats[key]['duration'] = duration
+                hourly_stats[key]['bytes'] = bytes_total
+                hourly_stats[key]['flows'] = 1
             
-            conn.commit()
+            # Write all entries back
+            with open(self.hourly_file, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['timestamp', 'device_ip', 'platform', 'activity_type',
+                               'total_duration_seconds', 'total_bytes', 'flow_count'])
+                
+                # Write old entries
+                for row in rows:
+                    writer.writerow([row['timestamp'], row['device_ip'], row['platform'],
+                                   row['activity_type'], row['total_duration_seconds'],
+                                   row['total_bytes'], row['flow_count']])
+                
+                # Write updated/new entries
+                for key, stats in hourly_stats.items():
+                    writer.writerow([key[0], key[1], key[2], key[3],
+                                   f"{stats['duration']:.2f}", stats['bytes'], stats['flows']])
     
-    def get_device_stats(self, device_ip, start_date=None, end_date=None):
-        """Get statistics for a specific device"""
-        device_id = self.get_or_create_device(device_ip)
+    def _update_daily_stats(self, device_ip, platform, activity_type,
+                           duration, bytes_total):
+        """Update daily aggregated statistics"""
+        today = datetime.now().date().isoformat()
         
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
+        # Read existing daily stats
+        daily_stats = defaultdict(lambda: {'duration': 0, 'bytes': 0, 'flows': 0})
+        
+        with self._lock_file(self.daily_file):
+            if os.path.exists(self.daily_file):
+                with open(self.daily_file, 'r') as f:
+                    reader = csv.DictReader(f)
+                    rows = []
+                    for row in reader:
+                        key = (row['date'], row['device_ip'], row['platform'], 
+                              row['activity_type'])
+                        if key[0] == today and key[1] == device_ip and \
+                           key[2] == platform and key[3] == activity_type:
+                            # Update this entry
+                            daily_stats[key]['duration'] = float(row['total_duration_seconds']) + duration
+                            daily_stats[key]['bytes'] = int(row['total_bytes']) + bytes_total
+                            daily_stats[key]['flows'] = int(row['flow_count']) + 1
+                        else:
+                            # Keep existing entry
+                            rows.append(row)
             
-            query = '''
-                SELECT platform, activity_type,
-                       SUM(total_duration_seconds) as total_seconds,
-                       SUM(total_bytes) as total_bytes,
-                       SUM(session_count) as sessions
-                FROM daily_summaries
-                WHERE device_id = ?
-            '''
-            params = [device_id]
+            # Add today if not exists
+            key = (today, device_ip, platform, activity_type)
+            if key not in daily_stats:
+                daily_stats[key]['duration'] = duration
+                daily_stats[key]['bytes'] = bytes_total
+                daily_stats[key]['flows'] = 1
             
-            if start_date:
-                query += ' AND date >= ?'
-                params.append(start_date)
-            
-            if end_date:
-                query += ' AND date <= ?'
-                params.append(end_date)
-            
-            query += ' GROUP BY platform, activity_type'
-            
-            cursor.execute(query, params)
-            
-            return [dict(row) for row in cursor.fetchall()]
+            # Write all entries back
+            with open(self.daily_file, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['date', 'device_ip', 'platform', 'activity_type',
+                               'total_duration_seconds', 'total_bytes', 'flow_count'])
+                
+                # Write old entries
+                for row in rows:
+                    writer.writerow([row['date'], row['device_ip'], row['platform'],
+                                   row['activity_type'], row['total_duration_seconds'],
+                                   row['total_bytes'], row['flow_count']])
+                
+                # Write updated/new entries
+                for key, stats in daily_stats.items():
+                    writer.writerow([key[0], key[1], key[2], key[3],
+                                   f"{stats['duration']:.2f}", stats['bytes'], stats['flows']])
     
-    def get_database_size(self):
-        """Get database file size in bytes"""
-        if os.path.exists(self.db_path):
-            return os.path.getsize(self.db_path)
-        return 0
+    def get_device_stats(self, device_ip=None, start_date=None, end_date=None):
+        """Get statistics for device(s)"""
+        stats = defaultdict(lambda: {'total_seconds': 0, 'total_bytes': 0, 'sessions': 0})
+        
+        if not os.path.exists(self.daily_file):
+            return []
+        
+        with open(self.daily_file, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                # Filter by device if specified
+                if device_ip and row['device_ip'] != device_ip:
+                    continue
+                
+                # Filter by date range if specified
+                row_date = row['date']
+                if start_date and row_date < start_date:
+                    continue
+                if end_date and row_date > end_date:
+                    continue
+                
+                key = (row['device_ip'], row['platform'], row['activity_type'])
+                stats[key]['total_seconds'] += float(row['total_duration_seconds'])
+                stats[key]['total_bytes'] += int(row['total_bytes'])
+                stats[key]['sessions'] += int(row['flow_count'])
+        
+        # Convert to list of dicts
+        result = []
+        for (device_ip, platform, activity_type), data in stats.items():
+            result.append({
+                'device_ip': device_ip,
+                'platform': platform,
+                'activity_type': activity_type,
+                'total_seconds': data['total_seconds'],
+                'total_bytes': data['total_bytes'],
+                'sessions': data['sessions']
+            })
+        
+        return result
+    
+    def get_storage_size(self):
+        """Get total storage size in bytes"""
+        total = 0
+        for filepath in [self.devices_file, self.flows_file, 
+                        self.hourly_file, self.daily_file]:
+            if os.path.exists(filepath):
+                total += os.path.getsize(filepath)
+        return total
     
     def cleanup_old_data(self, days_to_keep=30):
         """Remove data older than specified days"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            cutoff_date = datetime.now().date()
-            cutoff_date = cutoff_date.replace(day=cutoff_date.day - days_to_keep)
-            
-            cursor.execute('DELETE FROM flow_classifications WHERE date(timestamp) < ?', 
-                         (cutoff_date,))
-            cursor.execute('DELETE FROM traffic_stats WHERE date(timestamp) < ?', 
-                         (cutoff_date,))
-            cursor.execute('DELETE FROM sessions WHERE date(start_time) < ?', 
-                         (cutoff_date,))
-            cursor.execute('DELETE FROM daily_summaries WHERE date < ?', 
-                         (cutoff_date,))
-            
-            conn.commit()
-            
-            # Vacuum to reclaim space
-            cursor.execute('VACUUM')
+        from datetime import timedelta
+        
+        cutoff_date = (datetime.now().date() - timedelta(days=days_to_keep)).isoformat()
+        
+        # Clean flows
+        if os.path.exists(self.flows_file):
+            with self._lock_file(self.flows_file):
+                with open(self.flows_file, 'r') as f:
+                    reader = csv.DictReader(f)
+                    rows = [row for row in reader 
+                           if row['timestamp'][:10] >= cutoff_date]
+                
+                with open(self.flows_file, 'w', newline='') as f:
+                    if rows:
+                        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+                        writer.writeheader()
+                        writer.writerows(rows)
+        
+        # Clean hourly stats
+        if os.path.exists(self.hourly_file):
+            with self._lock_file(self.hourly_file):
+                with open(self.hourly_file, 'r') as f:
+                    reader = csv.DictReader(f)
+                    rows = [row for row in reader 
+                           if row['timestamp'][:10] >= cutoff_date]
+                
+                with open(self.hourly_file, 'w', newline='') as f:
+                    if rows:
+                        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+                        writer.writeheader()
+                        writer.writerows(rows)
+        
+        # Clean daily stats
+        if os.path.exists(self.daily_file):
+            with self._lock_file(self.daily_file):
+                with open(self.daily_file, 'r') as f:
+                    reader = csv.DictReader(f)
+                    rows = [row for row in reader 
+                           if row['date'] >= cutoff_date]
+                
+                with open(self.daily_file, 'w', newline='') as f:
+                    if rows:
+                        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+                        writer.writeheader()
+                        writer.writerows(rows)
 
 
 if __name__ == "__main__":
-    # Test the database
-    db = InstaMonitorDB("/tmp/test_instamonitor.db")
+    # Test the CSV storage
+    import tempfile
+    test_dir = tempfile.mkdtemp()
     
-    print("Database initialized successfully")
-    print(f"Database size: {db.get_database_size()} bytes")
+    db = InstaMonitorDB(test_dir)
+    
+    print("CSV storage initialized successfully")
+    print(f"Data directory: {test_dir}")
+    print(f"Storage size: {db.get_storage_size()} bytes")
     
     # Test operations
-    device_id = db.get_or_create_device("192.168.1.100", "AA:BB:CC:DD:EE:FF", "Test Device")
-    print(f"Device ID: {device_id}")
+    device_ip = db.get_or_create_device("192.168.1.100", "AA:BB:CC:DD:EE:FF", "Test Device")
+    print(f"Device IP: {device_ip}")
     
     # Record some test data
     db.record_flow_classification(
@@ -374,14 +379,21 @@ if __name__ == "__main__":
         45.5, 250, 5000, 125000, 500, 5.5, 0.1
     )
     
-    db.update_traffic_stats("192.168.1.100", "instagram", "video_scroll", 
-                           250, 130000, 1)
-    
-    db.update_daily_summary("192.168.1.100", "instagram", "video_scroll", 
-                           45, 130000)
+    db.record_flow_classification(
+        "192.168.1.100", "157.240.1.1", "instagram", "chat",
+        15.2, 80, 2000, 3000, 62.5, 8.2, 0.45
+    )
     
     # Get stats
     stats = db.get_device_stats("192.168.1.100")
     print(f"\nDevice stats: {stats}")
     
-    print("\nDatabase test completed successfully!")
+    # List created files
+    print(f"\nCreated files:")
+    for f in os.listdir(test_dir):
+        filepath = os.path.join(test_dir, f)
+        print(f"  {f}: {os.path.getsize(filepath)} bytes")
+    
+    print("\nCSV storage test completed successfully!")
+    print(f"\nYou can view the CSV files in: {test_dir}")
+

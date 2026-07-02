@@ -38,7 +38,7 @@ opkg list-installed | grep -E "(python3|tcpdump)"
 If missing, install:
 ```bash
 opkg update
-opkg install python3-light python3-sqlite3 tcpdump
+opkg install python3-light tcpdump
 ```
 
 2. **Verify file permissions:**
@@ -409,87 +409,103 @@ BATCH_SIZE=50  # from 100
 1. **Enable automatic cleanup:**
 ```bash
 vi /etc/instamonitor/config.conf
-DB_ROTATION_ENABLED=true
-DB_MAX_SIZE_MB=50  # from 100
+AUTO_CLEANUP_ENABLED=true
+MAX_STORAGE_MB=50  # from 100
 ```
 
 2. **Manual cleanup:**
 ```bash
-# Clean old data
-sqlite3 /var/lib/instamonitor/usage.db << EOF
-DELETE FROM flow_classifications WHERE timestamp < datetime('now', '-7 days');
-DELETE FROM traffic_stats WHERE timestamp < datetime('now', '-7 days');
-VACUUM;
-EOF
+# View file sizes
+ls -lh /var/lib/instamonitor/
+
+# Remove old flows (keep recent data)
+head -1000 /var/lib/instamonitor/flows.csv > /tmp/flows_new.csv
+mv /tmp/flows_new.csv /var/lib/instamonitor/flows.csv
+
+# Or clean flows older than 7 days using the database module
+python3 /etc/instamonitor/database.py
 ```
 
-3. **Clean packet logs:**
+3. **Archive and compress:**
 ```bash
-# Truncate packet log (analyzer will recreate)
-> /tmp/instamonitor/packet_log.txt
+# Archive old data
+tar -czf /tmp/instamonitor-$(date +%Y%m).tar.gz /var/lib/instamonitor/*.csv
+
+# Clear the CSV files (keep headers)
+for f in /var/lib/instamonitor/*.csv; do
+    head -1 "$f" > "${f}.new"
+    mv "${f}.new" "$f"
+done
+
+/etc/init.d/instamonitor restart
 ```
 
 ---
 
-## Database Issues
+## CSV File Issues
 
-### Database Locked
+### CSV File Corruption
 
-**Symptoms:** "database is locked" errors
-
-**Solutions:**
-
-1. **Stop competing processes:**
-```bash
-/etc/init.d/instamonitor stop
-sleep 2
-/etc/init.d/instamonitor start
-```
-
-2. **Check for stale locks:**
-```bash
-lsof /var/lib/instamonitor/usage.db
-# Kill any stale processes
-```
-
-3. **Increase timeout:**
-```bash
-vi /etc/instamonitor/database.py
-# Add to get_connection:
-conn.execute("PRAGMA busy_timeout = 30000")  # 30 seconds
-```
-
-### Corrupted Database
-
-**Symptoms:** SQLite errors, integrity check failures
+**Symptoms:** Errors reading CSV files, malformed data
 
 **Solutions:**
 
-1. **Check integrity:**
+1. **Check file integrity:**
 ```bash
-sqlite3 /var/lib/instamonitor/usage.db "PRAGMA integrity_check;"
+# View last few lines to check for truncation
+tail -20 /var/lib/instamonitor/flows.csv
+
+# Count lines (should match header + data)
+wc -l /var/lib/instamonitor/*.csv
 ```
 
-2. **Backup and rebuild:**
+2. **Validate CSV format:**
 ```bash
-# Backup current database
-cp /var/lib/instamonitor/usage.db /tmp/usage.db.backup
+# Check for proper comma separation
+head -5 /var/lib/instamonitor/daily_stats.csv
 
-# Dump data
-sqlite3 /var/lib/instamonitor/usage.db .dump > /tmp/dump.sql
-
-# Recreate database
-rm /var/lib/instamonitor/usage.db
-sqlite3 /var/lib/instamonitor/usage.db < /tmp/dump.sql
+# Test with Python
+python3 << EOF
+import csv
+with open('/var/lib/instamonitor/daily_stats.csv') as f:
+    reader = csv.DictReader(f)
+    for i, row in enumerate(reader):
+        if i > 5: break
+        print(row)
+EOF
 ```
 
-3. **Start fresh:**
+3. **Rebuild corrupted file:**
 ```bash
-# Backup for analysis
-cp /var/lib/instamonitor/usage.db /tmp/usage.db.old
+# Backup original
+cp /var/lib/instamonitor/flows.csv /tmp/flows_backup.csv
 
-# Remove and recreate
-rm /var/lib/instamonitor/usage.db
+# Extract valid lines
+head -1 /var/lib/instamonitor/flows.csv > /tmp/flows_clean.csv
+grep -E '^[0-9]{4}-' /tmp/flows_backup.csv >> /tmp/flows_clean.csv
+
+# Replace
+mv /tmp/flows_clean.csv /var/lib/instamonitor/flows.csv
+```
+
+### File Lock Issues
+
+**Symptoms:** "Permission denied" or "file busy" errors
+
+**Solutions:**
+
+1. **Check for processes:**
+```bash
+lsof /var/lib/instamonitor/*.csv
+```
+
+2. **Remove lock files:**
+```bash
+rm -f /var/lib/instamonitor/*.lock
+```
+
+3. **Restart service:**
+```bash
 /etc/init.d/instamonitor restart
 ```
 
@@ -524,7 +540,7 @@ free
 echo ""
 
 echo "=== Installed Packages ==="
-opkg list-installed | grep -E "(python3|tcpdump|sqlite)"
+opkg list-installed | grep -E "(python3|tcpdump)"
 echo ""
 
 echo "=== Service Status ==="
@@ -552,8 +568,14 @@ ls -lh /var/lib/instamonitor/
 ls -lh /tmp/instamonitor/ 2>/dev/null
 echo ""
 
-echo "=== Database Size ==="
-du -h /var/lib/instamonitor/usage.db 2>/dev/null || echo "No database yet"
+echo "=== CSV Data Files ==="
+if [ -d /var/lib/instamonitor ]; then
+    ls -lh /var/lib/instamonitor/*.csv 2>/dev/null || echo "No CSV files yet"
+    echo "Total size:"
+    du -sh /var/lib/instamonitor 2>/dev/null || echo "Directory not found"
+else
+    echo "Data directory not found"
+fi
 echo ""
 
 echo "=== Recent Logs ==="

@@ -2,9 +2,11 @@
 """
 InstaMonitor Traffic Analyzer
 Analyzes packet metadata to classify social media usage patterns
+Stores results in CSV files for easy analysis
 """
 
 import sys
+import os
 import time
 import configparser
 import re
@@ -287,9 +289,21 @@ def main():
     
     analyzer = TrafficAnalyzer(config_file)
     
+    # Import and initialize database
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from database import InstaMonitorDB
+    
+    # Get data directory from config
+    config = configparser.ConfigParser()
+    config.read(config_file)
+    data_dir = config.get('DEFAULT', 'DATA_DIR', fallback='/var/lib/instamonitor')
+    
+    db = InstaMonitorDB(data_dir)
+    
     print("InstaMonitor Traffic Analyzer started")
     print(f"Config: {config_file}")
     print(f"Packet log: {packet_log}")
+    print(f"Data directory: {data_dir}")
     
     last_analysis = time.time()
     
@@ -320,6 +334,24 @@ def main():
                                 print(f"{result['src_ip']} -> {result['classification'].value}: "
                                       f"{result['duration']:.1f}s, {result['packets']} packets, "
                                       f"{result['bytes_down']/1024:.1f}KB down")
+                                
+                                # Save to database
+                                try:
+                                    db.record_flow_classification(
+                                        device_ip=result['src_ip'],
+                                        remote_ip=result['dst_ip'],
+                                        platform=None,  # Will be determined from IP
+                                        activity_type=result['classification'].value,
+                                        duration=result['duration'],
+                                        packet_count=result['packets'],
+                                        bytes_up=result['bytes_up'],
+                                        bytes_down=result['bytes_down'],
+                                        avg_packet_size=result['avg_packet_size'],
+                                        packet_rate=result['packet_rate'],
+                                        bidirectional_ratio=result['bidirectional_ratio']
+                                    )
+                                except Exception as e:
+                                    print(f"Warning: Failed to save to database: {e}", file=sys.stderr)
                         
                         print(f"\nActive flows: Chat={activity_counts['chat']}, "
                               f"Video Conf={activity_counts['video_conference']}, "

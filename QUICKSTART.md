@@ -38,7 +38,7 @@ sh install.sh
 
 The installer will:
 - Update package lists
-- Install required packages (Python3, tcpdump, sqlite3)
+- Install required packages (Python3, tcpdump)
 - Create necessary directories
 - Copy configuration files
 - Set up the service
@@ -55,7 +55,7 @@ The installer will:
 # Check installed files
 ls -la /etc/instamonitor/
 
-# Test database module
+# Test CSV storage module
 python3 /etc/instamonitor/database.py
 ```
 
@@ -70,7 +70,7 @@ vi /etc/instamonitor/config.conf
 Key settings:
 - `CAPTURE_INTERFACE` - Your network interface (default: br-lan)
 - `ANALYSIS_INTERVAL` - How often to analyze (default: 10 seconds)
-- `DB_PATH` - Where to store the database
+- `DATA_DIR` - Where to store CSV files
 
 ## Step 6: Start Monitoring
 
@@ -236,6 +236,20 @@ sh /etc/instamonitor/update_ips.sh
 - Uses ~5-15% CPU on typical hardware
 - Monitor resource usage: `top` command
 - Tune settings if experiencing issues
+
+## Advantages of CSV Format
+
+✅ **Universal compatibility** - Works with Excel, Google Sheets, databases, programming languages  
+✅ **Human readable** - Can view/edit with any text editor  
+✅ **Easy to backup** - Simple file copy  
+✅ **No dependencies** - No need for SQLite or other databases  
+✅ **Portable** - Transfer between systems easily  
+✅ **Tool agnostic** - Use any analysis tool you prefer  
+✅ **Simple** - No complex queries needed for basic analysis  
+✅ **Lightweight** - Smaller than many database formats  
+✅ **Debuggable** - Easy to inspect and validate data  
+
+See [CSV_FORMAT.md](CSV_FORMAT.md) for complete format documentation and analysis examples.
 
 ## Success Checklist
 
