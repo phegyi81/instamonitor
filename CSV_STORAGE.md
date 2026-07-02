@@ -299,7 +299,9 @@ EOF
 ```bash
 # Remove stale locks
 rm -f /var/lib/instamonitor/*.lock
-/etc/init.d/instamonitor restart
+# Stop and restart the launcher
+killall run.sh tcpdump analyzer.py
+/etc/instamonitor/run.sh
 ```
 
 ### Storage Full

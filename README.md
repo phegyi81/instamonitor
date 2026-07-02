@@ -42,13 +42,16 @@ scp -r instamonitor root@router:/tmp/
 # 2. SSH into router
 ssh root@router
 
-# 3. Run installation script
+# 3. Run installation script (installs dependencies and copies files)
 cd /tmp/instamonitor
 sh install.sh
 
-# 4. Start monitoring
-/etc/init.d/instamonitor start
+# 4. Start monitoring from the command line
+/etc/instamonitor/run.sh
 ```
+
+> You can also run it directly from the source directory without installing:
+> `sh run.sh config.conf`
 
 ## Configuration
 
@@ -76,15 +79,20 @@ SNAPSHOT_LENGTH=96
 ## Usage
 
 ```bash
-# Start monitoring
-/etc/init.d/instamonitor start
+# Start monitoring (runs in the foreground, press Ctrl+C to stop)
+/etc/instamonitor/run.sh
 
-# Stop monitoring
-/etc/init.d/instamonitor stop
+# Run in the background and log output
+/etc/instamonitor/run.sh > /var/log/instamonitor.log 2>&1 &
+
+# Stop a background run
+kill %1        # if started with & in the same shell
+# or
+killall run.sh tcpdump analyzer.py
 
 # View statistics
 instamonitor-stats --today
-instamonitor-stats --device <MAC_ADDRESS>
+instamonitor-stats --device <IP_ADDRESS>
 instamonitor-stats --export /tmp/report.csv
 ```
 

@@ -4,7 +4,9 @@
 # Helps discover and update Instagram/TikTok IP addresses
 #
 
-CONFIG_DIR="/etc/instamonitor"
+# Resolve the directory this script lives in, so it works self-contained.
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+CONFIG_DIR="$SCRIPT_DIR"
 INSTAGRAM_IPS="$CONFIG_DIR/instagram_ips.txt"
 TIKTOK_IPS="$CONFIG_DIR/tiktok_ips.txt"
 
@@ -131,7 +133,7 @@ while true; do
     echo "6) View current Instagram IPs"
     echo "7) View current TikTok IPs"
     echo "8) Add IP manually"
-    echo "9) Restart InstaMonitor"
+    echo "9) Stop InstaMonitor (restart manually with run.sh)"
     echo "0) Exit"
     echo "========================================="
     echo -n "Choice: "
@@ -199,9 +201,9 @@ while true; do
             echo ""
             ;;
         9)
-            echo "Restarting InstaMonitor..."
-            /etc/init.d/instamonitor restart
-            echo "Done"
+            echo "Stopping InstaMonitor (if running)..."
+            killall run.sh tcpdump analyzer.py 2>/dev/null
+            echo "Restart it manually with: $SCRIPT_DIR/run.sh"
             echo ""
             ;;
         0)

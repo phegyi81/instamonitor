@@ -5,14 +5,17 @@
 #
 # Usage: capture.sh [config_file]
 #   config_file: Optional path to configuration file
-#                If not specified, uses /etc/instamonitor/config.conf
+#                If not specified, uses config.conf next to this script.
 #
+
+# Resolve the directory this script lives in.
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 # Load configuration
 if [ -n "$1" ]; then
     CONFIG_FILE="$1"
 else
-    CONFIG_FILE="/etc/instamonitor/config.conf"
+    CONFIG_FILE="$SCRIPT_DIR/config.conf"
 fi
 
 if [ -f "$CONFIG_FILE" ]; then
@@ -22,10 +25,23 @@ else
     exit 1
 fi
 
+# Base directory for resolving relative paths from the config file.
+CONFIG_DIR=$(cd "$(dirname "$CONFIG_FILE")" && pwd)
+
+# Resolve a possibly-relative path against the config directory.
+resolve_path() {
+    case "$1" in
+        /*) echo "$1" ;;
+        *) echo "$CONFIG_DIR/$1" ;;
+    esac
+}
+
 # Default values if not set in config
 CAPTURE_INTERFACE=${CAPTURE_INTERFACE:-br-lan}
 SNAPSHOT_LENGTH=${SNAPSHOT_LENGTH:-96}
-OUTPUT_DIR=${OUTPUT_DIR:-/tmp/instamonitor}
+OUTPUT_DIR=$(resolve_path "${OUTPUT_DIR:-data}")
+INSTAGRAM_IPS=$(resolve_path "${INSTAGRAM_IPS:-instagram_ips.txt}")
+TIKTOK_IPS=$(resolve_path "${TIKTOK_IPS:-tiktok_ips.txt}")
 
 # Create output directory
 mkdir -p "$OUTPUT_DIR"

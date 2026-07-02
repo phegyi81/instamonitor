@@ -43,4 +43,4 @@
 #    whois <ip_address>
 #
 # 3. Add new ranges here, one per line
-# 4. Restart InstaMonitor: /etc/init.d/instamonitor restart
+# 4. Restart InstaMonitor: stop with Ctrl+C (or 'killall run.sh tcpdump analyzer.py') and re-run /etc/instamonitor/run.sh

@@ -64,7 +64,7 @@
 #    whois <ip_address>
 #
 # 4. Add new ranges here, one per line
-# 5. Restart InstaMonitor: /etc/init.d/instamonitor restart
+# 5. Restart InstaMonitor: stop with Ctrl+C (or 'killall run.sh tcpdump analyzer.py') and re-run /etc/instamonitor/run.sh
 #
 # Note: Be careful with CDN ranges as they may serve other content too.
 # Test thoroughly before adding large CDN ranges.

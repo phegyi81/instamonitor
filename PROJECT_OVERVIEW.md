@@ -97,8 +97,12 @@ InstaMonitor is a lightweight network monitoring system for OpenWrt routers that
 - One-command deployment
 - Dependency installation
 - Configuration setup
-- Service creation
-- Init script generation
+- Installs the `run.sh` launcher and stats utility
+
+### 7. Launcher (`run.sh`)
+- Starts packet capture and analyzer together
+- Clean shutdown of both on Ctrl+C
+- Runs from the command line (no background service)
 
 ## File Structure
 
@@ -114,6 +118,7 @@ instamonitor/
 ├── capture.sh             # Packet capture script
 ├── analyzer.py            # Traffic analysis engine
 ├── database.py            # CSV file management
+├── run.sh                 # Command-line launcher
 ├── install.sh             # Installation script
 ├── update_ips.sh          # IP update helper
 ├── instagram_ips.txt      # Instagram IP ranges
@@ -125,8 +130,8 @@ instamonitor/
 1. **Transfer files** to router via SCP
 2. **Run install.sh** - handles all dependencies
 3. **Configure** (optional) - edit config.conf
-4. **Start service** - `/etc/init.d/instamonitor start`
-5. **Verify** - check logs and stats
+4. **Start monitoring** - `/etc/instamonitor/run.sh` (Ctrl+C to stop)
+5. **Verify** - check running processes and stats
 
 **Time required:** 5-10 minutes
 **Storage required:** ~50MB

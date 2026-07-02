@@ -13,20 +13,17 @@
 
 ## Common Issues
 
-### Service Won't Start
+### InstaMonitor Won't Start
 
-**Symptoms:** Service fails to start or immediately stops
+**Symptoms:** `run.sh` exits immediately or no processes stay running
 
 **Diagnosis:**
 ```bash
-# Check service status
-/etc/init.d/instamonitor status
+# Run in the foreground to see errors directly
+/etc/instamonitor/run.sh
 
-# View system logs
-logread | tail -50
-
-# Check for process errors
-ps | grep -E "(capture|analyzer)"
+# Check for running processes
+ps | grep -E "(capture|analyzer|tcpdump)"
 ```
 
 **Solutions:**
@@ -45,7 +42,7 @@ opkg install python3-light tcpdump
 ```bash
 chmod +x /etc/instamonitor/capture.sh
 chmod +x /etc/instamonitor/analyzer.py
-chmod +x /etc/init.d/instamonitor
+chmod +x /etc/instamonitor/run.sh
 ```
 
 3. **Check configuration:**
@@ -143,8 +140,8 @@ SCROLL_MIN_AVG_SIZE=1000
 ```bash
 vi /etc/instamonitor/config.conf
 # Set: LOG_LEVEL=DEBUG
-/etc/init.d/instamonitor restart
-tail -f /var/log/instamonitor.log
+# Restart run.sh, then watch the output
+/etc/instamonitor/run.sh
 ```
 
 4. **Verify flow duration:**
@@ -360,19 +357,18 @@ vi /etc/instamonitor/capture.sh
 ```
 
 3. **Limit to specific times:**
-Create a cron job to stop/start:
+Use cron to start/stop the launcher:
 ```bash
+# Start in the morning (background)
+0 7 * * * /etc/instamonitor/run.sh > /var/log/instamonitor.log 2>&1 &
 # Stop at night
-0 23 * * * /etc/init.d/instamonitor stop
-# Start in morning
-0 7 * * * /etc/init.d/instamonitor start
+0 23 * * * killall run.sh tcpdump analyzer.py
 ```
 
-4. **Use nice/ionice:**
+4. **Use nice:**
 ```bash
-vi /etc/init.d/instamonitor
-# Add nice -n 19 before commands
-nice -n 19 $PROG_CAPTURE
+# Launch with lower priority
+nice -n 19 /etc/instamonitor/run.sh
 ```
 
 ### High Memory Usage
@@ -437,7 +433,8 @@ for f in /var/lib/instamonitor/*.csv; do
     mv "${f}.new" "$f"
 done
 
-/etc/init.d/instamonitor restart
+# Restart the launcher (Ctrl+C the old one first)
+/etc/instamonitor/run.sh
 ```
 
 ---
@@ -504,9 +501,11 @@ lsof /var/lib/instamonitor/*.csv
 rm -f /var/lib/instamonitor/*.lock
 ```
 
-3. **Restart service:**
+3. **Restart the launcher:**
 ```bash
-/etc/init.d/instamonitor restart
+# Stop the running instance (Ctrl+C or killall), then start again
+killall run.sh tcpdump analyzer.py
+/etc/instamonitor/run.sh
 ```
 
 ---
@@ -543,12 +542,13 @@ echo "=== Installed Packages ==="
 opkg list-installed | grep -E "(python3|tcpdump)"
 echo ""
 
-echo "=== Service Status ==="
-/etc/init.d/instamonitor status 2>&1
-echo ""
-
 echo "=== Running Processes ==="
 ps | grep -E "(capture|analyzer|tcpdump)" | grep -v grep
+if ps | grep -q "[c]apture.sh"; then
+    echo "Status: RUNNING"
+else
+    echo "Status: NOT RUNNING"
+fi
 echo ""
 
 echo "=== Configuration ==="
@@ -578,8 +578,8 @@ else
 fi
 echo ""
 
-echo "=== Recent Logs ==="
-logread | grep instamonitor | tail -20
+echo "=== Recent Log (if running in background) ==="
+tail -20 /var/log/instamonitor.log 2>/dev/null || echo "No log file found"
 echo ""
 
 echo "=== Packet Log Status ==="
@@ -623,7 +623,7 @@ scp root@router:/tmp/diagnostic_report.txt ~/Downloads/
 If you're still experiencing issues:
 
 1. **Run the diagnostic script above**
-2. **Check logs carefully:** `logread | grep instamonitor`
+2. **Run `run.sh` in the foreground** to see errors directly, or check your log file if running in the background
 3. **Test components individually:**
    - Run capture.sh manually
    - Run analyzer.py manually

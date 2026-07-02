@@ -293,11 +293,15 @@ def main():
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from database import InstaMonitorDB
     
-    # Get data directory from config
+    # Get data directory from config, resolving relative paths against
+    # the directory containing the config file (the project directory).
     config = configparser.ConfigParser()
     config.read(config_file)
-    data_dir = config.get('DEFAULT', 'DATA_DIR', fallback='/var/lib/instamonitor')
-    
+    data_dir = config.get('DEFAULT', 'DATA_DIR', fallback='data')
+    if not os.path.isabs(data_dir):
+        config_dir = os.path.dirname(os.path.abspath(config_file))
+        data_dir = os.path.join(config_dir, data_dir)
+
     db = InstaMonitorDB(data_dir)
     
     print("InstaMonitor Traffic Analyzer started")

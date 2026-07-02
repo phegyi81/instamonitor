@@ -1,0 +1,15 @@
+# Runtime data (packet log, CSV output, logs, lock files)
+data/
+*.log
+*.lock
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Editor / OS cruft
+*.swp
+*~
+.DS_Store
+Thumbs.db

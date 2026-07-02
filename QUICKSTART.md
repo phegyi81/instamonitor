@@ -41,17 +41,16 @@ The installer will:
 - Install required packages (Python3, tcpdump)
 - Create necessary directories
 - Copy configuration files
-- Set up the service
-- Create utility scripts
+- Install the `run.sh` launcher and stats utility
 
 **This may take 5-10 minutes depending on your internet connection.**
+
+> Prefer not to install? You can run everything straight from the source
+> directory: `sh run.sh config.conf`
 
 ## Step 4: Verify Installation
 
 ```bash
-# Check if service is enabled
-/etc/init.d/instamonitor enabled && echo "OK" || echo "Not enabled"
-
 # Check installed files
 ls -la /etc/instamonitor/
 
@@ -74,15 +73,23 @@ Key settings:
 
 ## Step 6: Start Monitoring
 
+Run in the foreground (press Ctrl+C to stop):
+
 ```bash
-/etc/init.d/instamonitor start
+/etc/instamonitor/run.sh
+```
+
+Or run in the background and log the output:
+
+```bash
+/etc/instamonitor/run.sh > /var/log/instamonitor.log 2>&1 &
 ```
 
 ## Step 7: Verify It's Working
 
 Check processes:
 ```bash
-ps | grep -E "(capture|analyzer)"
+ps | grep -E "(capture|analyzer|tcpdump)"
 ```
 
 You should see:
@@ -90,12 +97,7 @@ You should see:
 - `analyzer.py` - Analyzing traffic
 - `tcpdump` - Actual packet capture
 
-Check logs:
-```bash
-logread | grep instamonitor | tail -20
-```
-
-Watch real-time analysis:
+Watch real-time analysis (foreground run prints to the terminal, or tail your log file):
 ```bash
 tail -f /var/log/instamonitor.log
 ```
@@ -166,7 +168,7 @@ sh /etc/instamonitor/update_ips.sh
 ```bash
 vi /etc/instamonitor/config.conf
 # Set: ANALYSIS_INTERVAL=30
-/etc/init.d/instamonitor restart
+# Then stop (Ctrl+C) and restart run.sh
 ```
 
 ## Next Steps
@@ -181,14 +183,14 @@ Now that InstaMonitor is running:
 ## Useful Commands
 
 ```bash
-# Start service
-/etc/init.d/instamonitor start
+# Start monitoring (foreground, Ctrl+C to stop)
+/etc/instamonitor/run.sh
 
-# Stop service
-/etc/init.d/instamonitor stop
+# Start in the background
+/etc/instamonitor/run.sh > /var/log/instamonitor.log 2>&1 &
 
-# Restart service
-/etc/init.d/instamonitor restart
+# Stop a background run
+killall run.sh tcpdump analyzer.py
 
 # View today's stats
 instamonitor-stats --today
@@ -199,11 +201,8 @@ instamonitor-stats --device 192.168.1.100 --week
 # Export data
 instamonitor-stats --today --export /tmp/stats.csv
 
-# Watch live analysis
+# Watch live analysis (when running in the background)
 tail -f /var/log/instamonitor.log
-
-# Check system logs
-logread | grep instamonitor
 
 # Update IP addresses
 sh /etc/instamonitor/update_ips.sh
@@ -254,10 +253,10 @@ See [CSV_FORMAT.md](CSV_FORMAT.md) for complete format documentation and analysi
 ## Success Checklist
 
 - [ ] Installation completed without errors
-- [ ] Service starts and runs
+- [ ] `run.sh` starts and runs
 - [ ] Packet capture is working (packet log file growing)
-- [ ] Analyzer is running (log shows classifications)
-- [ ] Database is being updated
+- [ ] Analyzer is running (output shows classifications)
+- [ ] CSV files are being updated
 - [ ] Statistics command shows data
 - [ ] Classifications appear reasonable
 

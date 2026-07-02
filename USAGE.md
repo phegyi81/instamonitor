@@ -14,31 +14,40 @@
 ### Starting InstaMonitor
 
 ```bash
-# Start the service
-/etc/init.d/instamonitor start
+# Start monitoring in the foreground (press Ctrl+C to stop)
+/etc/instamonitor/run.sh
+
+# Or start in the background, logging output to a file
+/etc/instamonitor/run.sh > /var/log/instamonitor.log 2>&1 &
 
 # Check if it's running
-ps | grep -E "(capture|analyzer)"
+ps | grep -E "(capture|analyzer|tcpdump)"
+```
 
-# View real-time logs
-logread -f | grep instamonitor
+You can also run it straight from the source directory without installing:
+
+```bash
+sh run.sh config.conf
 ```
 
 ### Stopping InstaMonitor
 
 ```bash
-# Stop the service
-/etc/init.d/instamonitor stop
+# Foreground run: press Ctrl+C
+
+# Background run: stop all components
+killall run.sh tcpdump analyzer.py
 
 # Verify it stopped
-ps | grep -E "(capture|analyzer)"
+ps | grep -E "(capture|analyzer|tcpdump)"
 ```
 
 ## Monitoring Traffic
 
 ### Real-time Monitoring
 
-Watch the analyzer output in real-time:
+When running in the foreground, classifications print directly to your terminal.
+When running in the background, watch the log file:
 
 ```bash
 tail -f /var/log/instamonitor.log
@@ -51,12 +60,9 @@ You'll see classifications like:
 192.168.1.102 -> video_conference: 180.3s, 2401 packets, 850.2KB down
 ```
 
-### Check Service Status
+### Check Running Status
 
 ```bash
-# Check if service is enabled
-/etc/init.d/instamonitor enabled && echo "Enabled" || echo "Disabled"
-
 # View process status
 top -b -n 1 | grep -E "(capture|analyzer|tcpdump)"
 ```
@@ -210,7 +216,8 @@ vi /etc/instamonitor/tiktok_ips.txt
 
 3. Restart InstaMonitor:
 ```bash
-/etc/init.d/instamonitor restart
+# Stop the running instance (Ctrl+C or killall), then start again:
+/etc/instamonitor/run.sh
 ```
 
 ### Automatic IP Discovery Script
@@ -420,8 +427,8 @@ vi /etc/instamonitor/config.conf
 # Change: LOG_LEVEL=INFO
 # To:     LOG_LEVEL=DEBUG
 
-/etc/init.d/instamonitor restart
-tail -f /var/log/instamonitor.log
+# Restart the run.sh launcher, then watch the output
+/etc/instamonitor/run.sh
 ```
 
 This will show detailed information about each flow and why it was classified a certain way.
