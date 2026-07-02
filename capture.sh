@@ -124,7 +124,6 @@ tcpdump -i "$CAPTURE_INTERFACE" \
     {
         # Parse tcpdump output format:
         # IP 192.168.100.89.40514 > 216.239.34.223.443: tcp 0
-        # $1=IP $2=src.port $3=> $4=dst.port: $5=proto $6=length
         
         # Get current timestamp
         timestamp = systime()
@@ -132,22 +131,24 @@ tcpdump -i "$CAPTURE_INTERFACE" \
         # Check if this is a valid packet line (has > separator)
         if ($3 == ">") {
             # Extract source IP (remove port)
-            # $2 format: IP.IP.IP.IP.port
+            # Format: IP.IP.IP.IP.port
+            src = ""
             n = split($2, src_parts, ".")
-            if (n >= 5) {
+            if (n > 4) {
                 src = src_parts[1] "." src_parts[2] "." src_parts[3] "." src_parts[4]
             }
             
             # Extract destination IP (remove port and trailing colon)
-            # $4 format: IP.IP.IP.IP.port: or IP.IP.IP.IP.port
-            gsub(/:/, "", $4)  # Remove colons
-            n = split($4, dst_parts, ".")
-            if (n >= 5) {
+            # Format: IP.IP.IP.IP.port: or IP.IP.IP.IP.port
+            dst = ""
+            dst_field = $4
+            gsub(/:/, "", dst_field)
+            n = split(dst_field, dst_parts, ".")
+            if (n > 4) {
                 dst = dst_parts[1] "." dst_parts[2] "." dst_parts[3] "." dst_parts[4]
             }
             
             # Extract packet length
-            # Could be just a number at end, or "length N"
             length = 0
             for (i = 1; i <= NF; i++) {
                 if ($i == "length") {
@@ -155,22 +156,21 @@ tcpdump -i "$CAPTURE_INTERFACE" \
                     break
                 }
             }
-            if (length == 0 && $NF ~ /^[0-9]+$/) {
+            if (length == 0 && match($NF, /^[0-9]+$/)) {
                 length = $NF
             }
             
             # Output if we successfully parsed everything
-            if (src != "" && dst != "" && length >= 0) {
+            if (src != "" && dst != "" && length != "") {
                 print timestamp "|" src "|" dst "|" length >> output
                 
-                # Flush every 10 packets to avoid buffer buildup
+                # Flush every 10 packets
                 if (NR % 10 == 0) {
                     close(output)
                 }
             }
         }
-    }
-    ' &
+    }' &
 
 TCPDUMP_PID=$!
 
