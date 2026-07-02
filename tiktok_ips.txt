@@ -1,0 +1,70 @@
+# TikTok IP Addresses and Ranges
+# Updated: 2026-07-02
+#
+# Note: TikTok uses ByteDance infrastructure and various CDNs
+# These IPs may change. Update periodically.
+
+# TikTok/ByteDance primary infrastructure
+110.238.107.0/24
+118.26.32.0/24
+118.26.33.0/24
+118.27.0.0/16
+124.156.0.0/16
+161.117.0.0/16
+161.117.64.0/18
+220.243.135.0/24
+220.243.136.0/24
+
+# TikTok CDN servers
+1.1.1.0/24
+47.246.0.0/16
+47.74.0.0/16
+49.51.0.0/16
+60.189.0.0/16
+101.36.0.0/16
+103.65.41.0/24
+110.76.0.0/16
+116.62.0.0/16
+118.24.0.0/16
+119.28.0.0/16
+139.162.0.0/16
+140.82.112.0/20
+143.244.0.0/16
+150.109.0.0/16
+161.117.0.0/16
+182.162.0.0/16
+203.107.0.0/16
+
+# Akamai CDN (used by TikTok)
+23.32.0.0/11
+23.64.0.0/14
+96.16.0.0/15
+104.64.0.0/13
+184.24.0.0/13
+
+# Cloudflare CDN (sometimes used)
+# 104.16.0.0/12
+# 172.64.0.0/13
+
+# Amazon CloudFront (sometimes used)
+# 13.32.0.0/15
+# 13.224.0.0/14
+# 13.249.0.0/16
+
+# Instructions for updating:
+# 1. Use dig or nslookup to find current IPs:
+#    dig tiktok.com +short
+#    dig www.tiktok.com +short
+#    dig v16-webapp.tiktok.com +short
+#
+# 2. Monitor DNS queries on your router:
+#    logread | grep dnsmasq | grep tiktok
+#
+# 3. Use whois to find the network range:
+#    whois <ip_address>
+#
+# 4. Add new ranges here, one per line
+# 5. Restart InstaMonitor: /etc/init.d/instamonitor restart
+#
+# Note: Be careful with CDN ranges as they may serve other content too.
+# Test thoroughly before adding large CDN ranges.

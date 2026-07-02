@@ -1,0 +1,46 @@
+# Instagram IP Addresses and Ranges
+# Updated: 2026-07-02
+# 
+# Note: Instagram uses Facebook's infrastructure
+# These IPs may change. Update periodically by running:
+# nslookup instagram.com
+# nslookup i.instagram.com
+# whois instagram.com
+
+# Instagram CDN and API servers
+157.240.0.0/16
+31.13.24.0/21
+31.13.64.0/18
+66.220.144.0/20
+69.63.176.0/20
+69.171.224.0/19
+74.119.76.0/22
+103.4.96.0/22
+129.134.0.0/16
+157.240.0.0/17
+173.252.64.0/18
+179.60.192.0/22
+185.60.216.0/22
+204.15.20.0/22
+
+# Facebook infrastructure (used by Instagram)
+163.70.128.0/17
+163.77.128.0/17
+185.89.218.0/23
+204.15.20.0/22
+
+# Cloudflare CDN (sometimes used)
+# 104.16.0.0/12
+# 172.64.0.0/13
+
+# Instructions for updating:
+# 1. Use dig or nslookup to find current IPs:
+#    dig instagram.com +short
+#    dig i.instagram.com +short
+#    dig scontent.cdninstagram.com +short
+#
+# 2. Use whois to find the network range:
+#    whois <ip_address>
+#
+# 3. Add new ranges here, one per line
+# 4. Restart InstaMonitor: /etc/init.d/instamonitor restart
