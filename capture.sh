@@ -58,12 +58,18 @@ build_filter() {
             case "$ip" in
                 \#*|"") continue ;;
             esac
-            
+
+            # Networks (CIDR) require 'net'; single addresses use 'host'
+            case "$ip" in
+                */*) kw="net" ;;
+                *) kw="host" ;;
+            esac
+
             if [ $first -eq 1 ]; then
-                filter="(host $ip"
+                filter="($kw $ip"
                 first=0
             else
-                filter="$filter or host $ip"
+                filter="$filter or $kw $ip"
             fi
         done < "$INSTAGRAM_IPS"
     fi
@@ -75,12 +81,18 @@ build_filter() {
             case "$ip" in
                 \#*|"") continue ;;
             esac
-            
+
+            # Networks (CIDR) require 'net'; single addresses use 'host'
+            case "$ip" in
+                */*) kw="net" ;;
+                *) kw="host" ;;
+            esac
+
             if [ $first -eq 1 ]; then
-                filter="(host $ip"
+                filter="($kw $ip"
                 first=0
             else
-                filter="$filter or host $ip"
+                filter="$filter or $kw $ip"
             fi
         done < "$TIKTOK_IPS"
     fi
