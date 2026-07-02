@@ -147,7 +147,7 @@ tcpdump -i "$CAPTURE_INTERFACE" \
     -s "$SNAPSHOT_LENGTH" \
     -n -t -l -q \
     -B 2048 \
-    "$FILTER" 2>/dev/null | \
+    "$FILTER" | \
     awk -v output="$OUTPUT_DIR/packet_log.txt" '
     {
         # Parse tcpdump output format:
