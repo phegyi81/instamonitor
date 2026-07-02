@@ -17,15 +17,9 @@ fi
 CAPTURE_INTERFACE=${CAPTURE_INTERFACE:-br-lan}
 SNAPSHOT_LENGTH=${SNAPSHOT_LENGTH:-96}
 OUTPUT_DIR=${OUTPUT_DIR:-/tmp/instamonitor}
-FIFO_PATH="${OUTPUT_DIR}/capture.fifo"
 
 # Create output directory
 mkdir -p "$OUTPUT_DIR"
-
-# Create named pipe for packet data if it doesn't exist
-if [ ! -p "$FIFO_PATH" ]; then
-    mkfifo "$FIFO_PATH"
-fi
 
 # Build tcpdump filter for Instagram and TikTok
 build_filter() {
@@ -93,69 +87,78 @@ fi
 
 echo "Starting packet capture on $CAPTURE_INTERFACE"
 echo "Filter: $FILTER"
-echo "Output: $FIFO_PATH"
+echo "Output: $OUTPUT_DIR/packet_log.txt"
 
 # Cleanup function
 cleanup() {
     echo "Stopping packet capture..."
     kill $TCPDUMP_PID 2>/dev/null
-    rm -f "$FIFO_PATH"
     exit 0
 }
 
 trap cleanup INT TERM
 
 # Start tcpdump with optimized settings
-# -i: interface
-# -s: snapshot length (capture only headers)
+# -i: interface to monitor
+# -s: snapshot length (capture only headers, not full packets)
 # -n: don't resolve hostnames (faster)
-# -t: don't print timestamps (less output)
-# -l: line buffered output
-# -q: quiet output (less verbose)
+# -t: don't print timestamps in output (we generate our own)
+# -l: line buffered output (for real-time processing)
+# -q: quiet output (less verbose, just essential info)
 # -B: buffer size in KB
 tcpdump -i "$CAPTURE_INTERFACE" \
     -s "$SNAPSHOT_LENGTH" \
-    -n -l -q \
+    -n -t -l -q \
     -B 2048 \
-    "$FILTER" \
-    -w - 2>/dev/null | tee "$FIFO_PATH" | \
-    # Output packet metadata in simple format
-    tcpdump -n -t -r - 2>/dev/null | \
+    "$FILTER" 2>/dev/null | \
     awk -v output="$OUTPUT_DIR/packet_log.txt" '
     {
-        # Parse tcpdump output: timestamp src > dst: flags, length
-        # Extract: timestamp, src_ip, dst_ip, protocol, length
+        # Parse tcpdump output format:
+        # IP 192.168.100.89.40514 > 216.239.34.223.443: tcp 0
+        # $1=IP $2=src.port $3=> $4=dst.port: $5=proto $6=length
         
-        gsub(/[,:]/, " ")
-        
-        # Get timestamp
+        # Get current timestamp
         timestamp = systime()
         
-        # Parse source and destination
-        if ($2 ~ />/) {
-            src = $1
-            dst = $3
-        }
-        
-        # Extract length (usually last field or marked as "length")
-        for (i = 1; i <= NF; i++) {
-            if ($i == "length") {
-                length = $(i+1)
-                break
+        # Check if this is a valid packet line (has > separator)
+        if ($3 == ">") {
+            # Extract source IP (remove port)
+            # $2 format: IP.IP.IP.IP.port
+            n = split($2, src_parts, ".")
+            if (n >= 5) {
+                src = src_parts[1] "." src_parts[2] "." src_parts[3] "." src_parts[4]
             }
-        }
-        if (length == "") {
-            # Try to find number at end
-            length = $NF
-            if (length !~ /^[0-9]+$/) length = 0
-        }
-        
-        # Output: timestamp|src|dst|length
-        print timestamp "|" src "|" dst "|" length >> output
-        
-        # Flush every 10 packets to avoid buffer buildup
-        if (NR % 10 == 0) {
-            close(output)
+            
+            # Extract destination IP (remove port and trailing colon)
+            # $4 format: IP.IP.IP.IP.port: or IP.IP.IP.IP.port
+            gsub(/:/, "", $4)  # Remove colons
+            n = split($4, dst_parts, ".")
+            if (n >= 5) {
+                dst = dst_parts[1] "." dst_parts[2] "." dst_parts[3] "." dst_parts[4]
+            }
+            
+            # Extract packet length
+            # Could be just a number at end, or "length N"
+            length = 0
+            for (i = 1; i <= NF; i++) {
+                if ($i == "length") {
+                    length = $(i+1)
+                    break
+                }
+            }
+            if (length == 0 && $NF ~ /^[0-9]+$/) {
+                length = $NF
+            }
+            
+            # Output if we successfully parsed everything
+            if (src != "" && dst != "" && length >= 0) {
+                print timestamp "|" src "|" dst "|" length >> output
+                
+                # Flush every 10 packets to avoid buffer buildup
+                if (NR % 10 == 0) {
+                    close(output)
+                }
+            }
         }
     }
     ' &
