@@ -162,15 +162,15 @@ tcpdump -i "$CAPTURE_INTERFACE" \
             
             # Output if we successfully parsed everything
             if (src != "" && dst != "" && length != "") {
-                print timestamp "|" src "|" dst "|" length >> output
+                print timestamp "|" src "|" dst "|" length
                 
-                # Flush every 10 packets
+                # Flush periodically
                 if (NR % 10 == 0) {
-                    close(output)
+                    fflush()
                 }
             }
         }
-    }' &
+    }' >> "$OUTPUT_DIR/packet_log.txt" &
 
 TCPDUMP_PID=$!
 
