@@ -68,3 +68,4 @@
 #
 # Note: Be careful with CDN ranges as they may serve other content too.
 # Test thoroughly before adding large CDN ranges.
+95.100.146.0/24

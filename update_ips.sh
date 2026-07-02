@@ -30,9 +30,10 @@ discover_ips() {
             echo "  $d:"
             dig +short $d A | grep -E '^[0-9]+\.' | sort -u | while read ip; do
                 echo "    $ip"
-                # Get whois info to find network range
+                # Get whois info to find network range (5s timeout so a
+                # slow/unresponsive whois server doesn't hang the script)
                 if command -v whois >/dev/null 2>&1; then
-                    whois $ip | grep -E '^(CIDR|inetnum|NetRange)' | head -1
+                    timeout 5 whois $ip 2>/dev/null | grep -E '^(CIDR|inetnum|NetRange)' | head -1
                 fi
             done
         done
