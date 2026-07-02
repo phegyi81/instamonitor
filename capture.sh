@@ -3,9 +3,18 @@
 # InstaMonitor Packet Capture Script
 # Optimized for OpenWrt with minimal resource usage
 #
+# Usage: capture.sh [config_file]
+#   config_file: Optional path to configuration file
+#                If not specified, uses /etc/instamonitor/config.conf
+#
 
 # Load configuration
-CONFIG_FILE="/etc/instamonitor/config.conf"
+if [ -n "$1" ]; then
+    CONFIG_FILE="$1"
+else
+    CONFIG_FILE="/etc/instamonitor/config.conf"
+fi
+
 if [ -f "$CONFIG_FILE" ]; then
     . "$CONFIG_FILE"
 else
