@@ -13,18 +13,21 @@
 
 ### Starting InstaMonitor
 
+All commands below assume you are in the project directory (where `run.sh`
+lives). Everything runs self-contained from here.
+
 ```bash
 # Start monitoring in the foreground (press Ctrl+C to stop)
-/etc/instamonitor/run.sh
+./run.sh
 
 # Or start in the background, logging output to a file
-/etc/instamonitor/run.sh > /var/log/instamonitor.log 2>&1 &
+./run.sh > data/instamonitor.log 2>&1 &
 
 # Check if it's running
 ps | grep -E "(capture|analyzer|tcpdump)"
 ```
 
-You can also run it straight from the source directory without installing:
+You can also point it at a specific config file:
 
 ```bash
 sh run.sh config.conf
@@ -50,7 +53,7 @@ When running in the foreground, classifications print directly to your terminal.
 When running in the background, watch the log file:
 
 ```bash
-tail -f /var/log/instamonitor.log
+tail -f data/instamonitor.log
 ```
 
 You'll see classifications like:
@@ -72,7 +75,7 @@ top -b -n 1 | grep -E "(capture|analyzer|tcpdump)"
 ### Today's Statistics
 
 ```bash
-instamonitor-stats --today
+./stats.py --today
 ```
 
 Output:
@@ -96,23 +99,23 @@ TOTAL                             04:56:15        961.75 MB
 
 ```bash
 # View stats for a specific device
-instamonitor-stats --device 192.168.1.100 --today
+./stats.py --device 192.168.1.100 --today
 
 # Last week's stats
-instamonitor-stats --device 192.168.1.100 --week
+./stats.py --device 192.168.1.100 --week
 
 # All-time stats
-instamonitor-stats --device 192.168.1.100
+./stats.py --device 192.168.1.100
 ```
 
 ### Export to CSV
 
 ```bash
 # Export today's data
-instamonitor-stats --today --export /tmp/stats_today.csv
+./stats.py --today --export data/stats_today.csv
 
 # Transfer to your computer
-scp root@router:/tmp/stats_today.csv ~/Downloads/
+scp root@router:/path/to/instamonitor/data/stats_today.csv ~/Downloads/
 ```
 
 ## Understanding Classifications
@@ -205,8 +208,8 @@ tcpdump -i br-lan -n "tcp port 443" | grep -E "(instagram|tiktok)"
 
 1. Edit the IP list files:
 ```bash
-vi /etc/instamonitor/instagram_ips.txt
-vi /etc/instamonitor/tiktok_ips.txt
+vi instagram_ips.txt
+vi tiktok_ips.txt
 ```
 
 2. Add new IP ranges (one per line):
@@ -217,7 +220,7 @@ vi /etc/instamonitor/tiktok_ips.txt
 3. Restart InstaMonitor:
 ```bash
 # Stop the running instance (Ctrl+C or killall), then start again:
-/etc/instamonitor/run.sh
+./run.sh
 ```
 
 ### Automatic IP Discovery Script
@@ -246,7 +249,7 @@ If InstaMonitor is using too much CPU:
 
 1. **Increase analysis interval** (analyze less frequently):
 ```bash
-vi /etc/instamonitor/config.conf
+vi config.conf
 # Change: ANALYSIS_INTERVAL=10
 # To:     ANALYSIS_INTERVAL=30
 ```
@@ -259,7 +262,7 @@ vi /etc/instamonitor/config.conf
 
 3. **Limit to specific devices** (modify capture filter):
 ```bash
-vi /etc/instamonitor/capture.sh
+vi capture.sh
 # Add device filter in build_filter function
 ```
 
@@ -267,57 +270,63 @@ vi /etc/instamonitor/capture.sh
 
 1. **Decrease buffer size**:
 ```bash
-vi /etc/instamonitor/config.conf
+vi config.conf
 # Change: BUFFER_SIZE=10000
 # To:     BUFFER_SIZE=5000
 ```
 
 2. **Enable more aggressive cleanup**:
 ```bash
-vi /etc/instamonitor/config.conf
-# Change: DB_MAX_SIZE_MB=100
-# To:     DB_MAX_SIZE_MB=50
+vi config.conf
+# Change: MAX_STORAGE_MB=100
+# To:     MAX_STORAGE_MB=50
 ```
 
 ### Reducing Storage Usage
 
-1. **Enable database rotation**:
+1. **Enable automatic cleanup**:
 ```bash
-vi /etc/instamonitor/config.conf
-# Ensure: DB_ROTATION_ENABLED=true
+vi config.conf
+# Ensure: AUTO_CLEANUP_ENABLED=true
 ```
 
-2. **Clean old data manually**:
+2. **Clean old data manually** (archive, then keep only headers):
 ```bash
-sqlite3 /var/lib/instamonitor/usage.db "DELETE FROM flow_classifications WHERE timestamp < datetime('now', '-7 days');"
-sqlite3 /var/lib/instamonitor/usage.db "VACUUM;"
+# Archive the current CSV files
+tar -czf data/backup-$(date +%Y%m).tar.gz data/*.csv
+
+# Keep only the header row of each CSV
+for f in data/*.csv; do
+    head -1 "$f" > "$f.new" && mv "$f.new" "$f"
+done
 ```
 
 ## Data Export
 
 ### CSV Export
 
-The data is already in CSV format! The files are located in `/var/lib/instamonitor/`:
+The data is already in CSV format! The files are located in the `data/`
+directory inside the project:
 
 ```bash
 # Copy all CSV files to your computer
-scp root@router:/var/lib/instamonitor/*.csv ~/Downloads/
+scp root@router:/path/to/instamonitor/data/*.csv ~/Downloads/
 
 # List the CSV files
-ssh root@router "ls -lh /var/lib/instamonitor/"
+ssh root@router "ls -lh /path/to/instamonitor/data/"
 
 # View daily stats directly
-ssh root@router "cat /var/lib/instamonitor/daily_stats.csv"
+ssh root@router "cat /path/to/instamonitor/data/daily_stats.csv"
 ```
 
-### Using instamonitor-stats Export
+### Using stats.py Export
 
 ```bash
 # Export aggregated data
-instamonitor-stats --export /tmp/all_stats.csv
+./stats.py --export data/all_stats.csv
 
 # Export specific device
-instamonitor-stats --device 192.168.1.100 --week --export /tmp/device_stats.csv
+./stats.py --device 192.168.1.100 --week --export data/device_stats.csv
 ```
 
 ### Direct CSV Access
@@ -327,10 +336,10 @@ instamonitor-stats --device 192.168.1.100 --week --export /tmp/device_stats.csv
 # Simply open the CSV files directly
 
 # View in terminal with column formatting
-column -t -s, /var/lib/instamonitor/daily_stats.csv | less
+column -t -s, data/daily_stats.csv | less
 
 # Get specific platform data
-grep "instagram" /var/lib/instamonitor/daily_stats.csv
+grep "instagram" data/daily_stats.csv
 ```
 
 ### Import Into Analysis Tools
@@ -348,25 +357,25 @@ See [CSV_FORMAT.md](CSV_FORMAT.md) for detailed examples of importing into:
 Create a daily report script:
 
 ```bash
-cat > /etc/instamonitor/daily_report.sh << 'EOF'
+cat > daily_report.sh << 'EOF'
 #!/bin/sh
 DATE=$(date +%Y-%m-%d)
-REPORT="/tmp/instamonitor_report_$DATE.txt"
+REPORT="data/instamonitor_report_$DATE.txt"
 
 echo "InstaMonitor Daily Report - $DATE" > $REPORT
 echo "=======================================" >> $REPORT
 echo "" >> $REPORT
 
-instamonitor-stats --today >> $REPORT
+./stats.py --today >> $REPORT
 
 # Optionally email or upload the report
 # mail -s "Daily InstaMonitor Report" user@example.com < $REPORT
 EOF
 
-chmod +x /etc/instamonitor/daily_report.sh
+chmod +x daily_report.sh
 
-# Add to cron (run at midnight)
-echo "0 0 * * * /etc/instamonitor/daily_report.sh" >> /etc/crontabs/root
+# Add to cron (run at midnight) - use the full path to the script
+echo "0 0 * * * $(pwd)/daily_report.sh" >> /etc/crontabs/root
 /etc/init.d/cron restart
 ```
 
@@ -400,7 +409,7 @@ echo "0 0 * * * /etc/instamonitor/daily_report.sh" >> /etc/crontabs/root
 Adjust thresholds based on observed patterns:
 
 ```bash
-vi /etc/instamonitor/config.conf
+vi config.conf
 
 # Make chat detection more sensitive
 CHAT_PACKET_SIZE_MAX=600
@@ -423,12 +432,12 @@ SCROLL_DOWNLOAD_RATIO=0.75
 Enable detailed logging:
 
 ```bash
-vi /etc/instamonitor/config.conf
+vi config.conf
 # Change: LOG_LEVEL=INFO
 # To:     LOG_LEVEL=DEBUG
 
 # Restart the run.sh launcher, then watch the output
-/etc/instamonitor/run.sh
+./run.sh
 ```
 
 This will show detailed information about each flow and why it was classified a certain way.
