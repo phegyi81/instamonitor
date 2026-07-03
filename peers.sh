@@ -31,6 +31,22 @@ if ! command -v tcpdump >/dev/null 2>&1; then
     exit 1
 fi
 
+# Portable timeout: some OpenWrt/busybox builds lack the `timeout` applet.
+# Provides `timeout <seconds> <command...>` via background + sleep + kill.
+if ! command -v timeout >/dev/null 2>&1; then
+    timeout() {
+        _timeout_secs="$1"; shift
+        "$@" &
+        _timeout_cmd_pid=$!
+        ( sleep "$_timeout_secs"; kill "$_timeout_cmd_pid" 2>/dev/null ) &
+        _timeout_killer_pid=$!
+        wait "$_timeout_cmd_pid" 2>/dev/null
+        _timeout_rc=$?
+        kill "$_timeout_killer_pid" 2>/dev/null
+        return $_timeout_rc
+    }
+fi
+
 echo "========================================="
 echo "InstaMonitor Peer Discovery"
 echo "========================================="
