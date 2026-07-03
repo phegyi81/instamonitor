@@ -31,7 +31,7 @@ opkg update
 echo ""
 echo "Installing required packages..."
 
-packages="python3-light tcpdump"
+packages="python3-light python3-decimal tcpdump"
 
 for pkg in $packages; do
     if ! opkg list-installed | grep -q "^$pkg "; then
