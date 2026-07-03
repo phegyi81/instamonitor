@@ -60,7 +60,7 @@ echo ""
 # Capture packets to/from the device on port 443 (TCP and UDP/QUIC),
 # extract the remote peer IP from each line, and count packets per peer.
 timeout "$DURATION" tcpdump -i "$INTERFACE" -n -t -q \
-    "host $DEVICE_IP and (tcp port 443 or udp port 443)" 2>/dev/null | \
+    "host $DEVICE_IP and (tcp port 443 or udp port 443)" | \
     awk -v dev="$DEVICE_IP" '
     {
         # tcpdump line: IP <src.port> > <dst.port>: ...
