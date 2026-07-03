@@ -24,6 +24,19 @@ class ActivityType(Enum):
     UNKNOWN = "unknown"
 
 
+def read_config(config_file):
+    """Parse the shell-style KEY=value config with configparser.
+
+    The file is also sourced by the shell scripts, so it has no INI
+    section header. We inject a synthetic [DEFAULT] section in memory
+    and honor inline '#' comments so values like "0.3  # note" parse.
+    """
+    parser = configparser.ConfigParser(inline_comment_prefixes=('#',))
+    with open(config_file) as f:
+        parser.read_string('[DEFAULT]\n' + f.read())
+    return parser
+
+
 class PacketFlow:
     """Represents a flow of packets between two endpoints"""
     
@@ -138,8 +151,7 @@ class TrafficAnalyzer:
         
     def load_config(self, config_file):
         """Load configuration from file"""
-        config = configparser.ConfigParser()
-        config.read(config_file)
+        config = read_config(config_file)
         
         return {
             'chat_max_size': int(config.get('DEFAULT', 'CHAT_PACKET_SIZE_MAX', fallback='500')),
@@ -295,8 +307,7 @@ def main():
     
     # Get data directory from config, resolving relative paths against
     # the directory containing the config file (the project directory).
-    config = configparser.ConfigParser()
-    config.read(config_file)
+    config = read_config(config_file)
     data_dir = config.get('DEFAULT', 'DATA_DIR', fallback='data')
     if not os.path.isabs(data_dir):
         config_dir = os.path.dirname(os.path.abspath(config_file))
