@@ -40,66 +40,26 @@ resolve_path() {
 CAPTURE_INTERFACE=${CAPTURE_INTERFACE:-br-lan}
 SNAPSHOT_LENGTH=${SNAPSHOT_LENGTH:-96}
 OUTPUT_DIR=$(resolve_path "${OUTPUT_DIR:-data}")
-INSTAGRAM_IPS=$(resolve_path "${INSTAGRAM_IPS:-instagram_ips.txt}")
-TIKTOK_IPS=$(resolve_path "${TIKTOK_IPS:-tiktok_ips.txt}")
 
 # Create output directory
 mkdir -p "$OUTPUT_DIR"
 
-# Build tcpdump filter for Instagram and TikTok
-build_filter() {
+# Build a device-based filter: monitor only the configured device IP(s).
+# Everything the device does on 443 is captured; the analyzer resolves each
+# remote IP's owner on the fly and the classifier sorts target vs background.
+build_device_filter() {
     local filter=""
     local first=1
-    
-    # Read Instagram IPs
-    if [ -f "$INSTAGRAM_IPS" ]; then
-        while read -r ip; do
-            # Skip comments and empty lines
-            case "$ip" in
-                \#*|"") continue ;;
-            esac
-
-            # Networks (CIDR) require 'net'; single addresses use 'host'
-            case "$ip" in
-                */*) kw="net" ;;
-                *) kw="host" ;;
-            esac
-
-            if [ $first -eq 1 ]; then
-                filter="($kw $ip"
-                first=0
-            else
-                filter="$filter or $kw $ip"
-            fi
-        done < "$INSTAGRAM_IPS"
-    fi
-    
-    # Read TikTok IPs
-    if [ -f "$TIKTOK_IPS" ]; then
-        while read -r ip; do
-            # Skip comments and empty lines
-            case "$ip" in
-                \#*|"") continue ;;
-            esac
-
-            # Networks (CIDR) require 'net'; single addresses use 'host'
-            case "$ip" in
-                */*) kw="net" ;;
-                *) kw="host" ;;
-            esac
-
-            if [ $first -eq 1 ]; then
-                filter="($kw $ip"
-                first=0
-            else
-                filter="$filter or $kw $ip"
-            fi
-        done < "$TIKTOK_IPS"
-    fi
-    
+    for ip in $DEVICE_IPS; do
+        if [ $first -eq 1 ]; then
+            filter="(host $ip"
+            first=0
+        else
+            filter="$filter or host $ip"
+        fi
+    done
     if [ $first -eq 0 ]; then
-        filter="$filter)"
-        echo "$filter"
+        echo "$filter)"
     else
         echo ""
     fi
@@ -111,16 +71,14 @@ if ! command -v tcpdump >/dev/null 2>&1; then
     exit 1
 fi
 
-# Build the filter
-FILTER=$(build_filter)
-
-if [ -z "$FILTER" ]; then
-    echo "WARNING: No IP addresses configured. Monitoring all HTTPS traffic."
-    FILTER="tcp port 443"
-else
-    # Add HTTPS/QUIC port filters
-    FILTER="($FILTER) and (tcp port 443 or udp port 443)"
+# Build the filter (monitor the configured device IP(s) on HTTPS/QUIC).
+DEV_FILTER=$(build_device_filter)
+if [ -z "$DEV_FILTER" ]; then
+    echo "ERROR: DEVICE_IPS is empty in config.conf."
+    echo "Set DEVICE_IPS to the LAN IP(s) of the phone(s) to monitor."
+    exit 1
 fi
+FILTER="$DEV_FILTER and (tcp port 443 or udp port 443)"
 
 echo "Starting packet capture on $CAPTURE_INTERFACE"
 echo "Filter: $FILTER"
@@ -148,57 +106,7 @@ tcpdump -i "$CAPTURE_INTERFACE" \
     -n -t -l -q \
     -B 2048 \
     "$FILTER" | \
-    awk -v output="$OUTPUT_DIR/packet_log.txt" '
-    {
-        # Parse tcpdump output format:
-        # IP 192.168.100.89.40514 > 216.239.34.223.443: tcp 0
-        
-        # Get current timestamp
-        timestamp = systime()
-        
-        # Check if this is a valid packet line (has > separator)
-        if ($3 == ">") {
-            # Extract source IP (remove port)
-            # Format: IP.IP.IP.IP.port
-            src = ""
-            n = split($2, src_parts, ".")
-            if (n > 4) {
-                src = src_parts[1] "." src_parts[2] "." src_parts[3] "." src_parts[4]
-            }
-            
-            # Extract destination IP (remove port and trailing colon)
-            # Format: IP.IP.IP.IP.port: or IP.IP.IP.IP.port
-            dst = ""
-            dst_field = $4
-            gsub(/:/, "", dst_field)
-            n = split(dst_field, dst_parts, ".")
-            if (n > 4) {
-                dst = dst_parts[1] "." dst_parts[2] "." dst_parts[3] "." dst_parts[4]
-            }
-            
-            # Extract packet length
-            length = 0
-            for (i = 1; i <= NF; i++) {
-                if ($i == "length") {
-                    length = $(i+1)
-                    break
-                }
-            }
-            if (length == 0 && match($NF, /^[0-9]+$/)) {
-                length = $NF
-            }
-            
-            # Output if we successfully parsed everything
-            if (src != "" && dst != "" && length != "") {
-                print timestamp "|" src "|" dst "|" length
-                
-                # Flush periodically
-                if (NR % 10 == 0) {
-                    fflush()
-                }
-            }
-        }
-    }' >> "$OUTPUT_DIR/packet_log.txt" &
+    awk -f "$SCRIPT_DIR/parse_packets.awk" >> "$OUTPUT_DIR/packet_log.txt" &
 
 TCPDUMP_PID=$!
 

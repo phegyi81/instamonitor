@@ -1,679 +1,280 @@
 # InstaMonitor Troubleshooting Guide
 
+All paths are relative to the project directory (where `run.sh` lives).
+Runtime data is in `./data/`. Nothing is installed to `/etc`, `/var`, or `/tmp`.
+
 ## Table of Contents
-1. [Common Issues](#common-issues)
-2. [Installation Problems](#installation-problems)
-3. [Capture Issues](#capture-issues)
-4. [Classification Problems](#classification-problems)
-5. [Performance Issues](#performance-issues)
-6. [Database Issues](#database-issues)
-7. [Diagnostic Commands](#diagnostic-commands)
+1. [Won't Start](#wont-start)
+2. [Nothing Being Captured](#nothing-being-captured)
+3. [No Classifications / Everything "unknown"](#no-classifications--everything-unknown)
+4. [Flows Being Dropped](#flows-being-dropped)
+5. [Training Problems](#training-problems)
+6. [IP Resolution Problems](#ip-resolution-problems)
+7. [Performance Issues](#performance-issues)
+8. [CSV / Storage Issues](#csv--storage-issues)
+9. [Diagnostic Snapshot](#diagnostic-snapshot)
 
 ---
 
-## Common Issues
+## Won't Start
 
-### InstaMonitor Won't Start
+**Symptoms:** `run.sh` exits immediately or no processes stay running.
 
-**Symptoms:** `run.sh` exits immediately or no processes stay running
-
-**Diagnosis:**
-```bash
-# Run in the foreground to see errors directly
-/etc/instamonitor/run.sh
-
-# Check for running processes
-ps | grep -E "(capture|analyzer|tcpdump)"
+**Diagnose** — run in the foreground to see errors:
+```sh
+./run.sh
+ps | grep -E "(capture|analyzer|tcpdump)" | grep -v grep
 ```
 
-**Solutions:**
+**Fixes:**
 
-1. **Check dependencies:**
-```bash
-opkg list-installed | grep -E "(python3|tcpdump)"
-```
-If missing, install:
-```bash
-opkg update
-opkg install python3-light tcpdump
-```
-
-2. **Verify file permissions:**
-```bash
-chmod +x /etc/instamonitor/capture.sh
-chmod +x /etc/instamonitor/analyzer.py
-chmod +x /etc/instamonitor/run.sh
-```
-
-3. **Check configuration:**
-```bash
-cat /etc/instamonitor/config.conf
-# Ensure no syntax errors
-```
-
-4. **Verify directories exist:**
-```bash
-mkdir -p /var/lib/instamonitor
-mkdir -p /tmp/instamonitor
-```
+1. Dependencies present?
+   ```sh
+   opkg list-installed | grep -E "(python3-light|python3-decimal|tcpdump)"
+   opkg update && opkg install python3-light python3-decimal tcpdump
+   ```
+2. `statistics` import fails? You're missing `python3-decimal`:
+   ```sh
+   opkg install python3-decimal
+   ```
+3. Scripts executable?
+   ```sh
+   sh install.sh          # re-runs the chmod step
+   ```
+4. Config readable and valid?
+   ```sh
+   sh -n capture.sh       # shell syntax check
+   cat config.conf
+   ```
 
 ---
 
-### No Traffic Being Captured
+## Nothing Being Captured
 
-**Symptoms:** Packet log file is empty or not growing
+**Symptoms:** `data/packet_log.txt` is empty or not growing.
 
-**Diagnosis:**
-```bash
-# Check if tcpdump is running
+**Diagnose:**
+```sh
 ps | grep tcpdump
-
-# Test tcpdump manually
-tcpdump -i br-lan -c 10 -n
-
-# Check packet log
-ls -lh /tmp/instamonitor/packet_log.txt
-tail /tmp/instamonitor/packet_log.txt
+tcpdump -i br-lan -c 10 -n            # do you see any traffic at all?
+ls -lh data/packet_log.txt
+tail data/packet_log.txt
 ```
 
-**Solutions:**
+**Fixes:**
 
-1. **Verify correct interface:**
-```bash
-# List interfaces
-ifconfig
-
-# Update config if needed
-vi /etc/instamonitor/config.conf
-# Set correct CAPTURE_INTERFACE
-```
-
-2. **Check IP filter lists:**
-```bash
-# Ensure IP files exist and have content
-cat /etc/instamonitor/instagram_ips.txt
-cat /etc/instamonitor/tiktok_ips.txt
-
-# Test without IP filtering
-tcpdump -i br-lan "tcp port 443" -c 10
-```
-
-3. **Verify network activity:**
-```bash
-# Monitor all HTTPS traffic
-tcpdump -i br-lan "tcp port 443" -n -c 20
-```
+1. **Wrong interface.** Find the LAN bridge and update `CAPTURE_INTERFACE`:
+   ```sh
+   ifconfig                            # commonly br-lan
+   vi config.conf                      # set CAPTURE_INTERFACE=...
+   ```
+2. **Wrong device IP.** `DEVICE_IPS` must list the phone's actual LAN IP. Give
+   the phone a static DHCP lease so it doesn't change:
+   ```sh
+   vi config.conf                      # DEVICE_IPS=192.168.1.100
+   ```
+3. **Confirm the phone's traffic reaches the router** (test the exact filter):
+   ```sh
+   tcpdump -i br-lan "host 192.168.1.100 and (tcp port 443 or udp port 443)" -c 20 -n
+   ```
+4. **Parser producing nothing?** Feed a sample through the awk parser:
+   ```sh
+   tcpdump -i br-lan -q "host 192.168.1.100 and port 443" -c 20 | awk -f parse_packets.awk
+   ```
+   Expected line format: `epoch_ts|proto|src_ip|src_port|dst_ip|dst_port|length`.
 
 ---
 
-### No Classifications / All Unknown
+## No Classifications / Everything "unknown"
 
-**Symptoms:** Analyzer runs but classifies everything as "unknown"
+**Symptoms:** the analyzer runs but every flow is `unknown` (or you get no rows).
 
-**Diagnosis:**
-```bash
-# Check analyzer output
-tail -f /var/log/instamonitor.log
+The number one cause is **no trained model** or **too little training data**.
 
-# Verify packet data format
-head -20 /tmp/instamonitor/packet_log.txt
-```
+**Fixes:**
 
-**Solutions:**
-
-1. **Check packet log format:**
-Expected format: `timestamp|src_ip|dst_ip|length`
-```bash
-# View sample entries
-head -5 /tmp/instamonitor/packet_log.txt
-```
-
-2. **Adjust classification thresholds:**
-```bash
-vi /etc/instamonitor/config.conf
-# Try more lenient thresholds:
-CHAT_PACKET_SIZE_MAX=800
-SCROLL_MIN_AVG_SIZE=1000
-```
-
-3. **Enable debug logging:**
-```bash
-vi /etc/instamonitor/config.conf
-# Set: LOG_LEVEL=DEBUG
-# Restart run.sh, then watch the output
-/etc/instamonitor/run.sh
-```
-
-4. **Verify flow duration:**
-Flows need at least 5 packets to be classified. If sessions are very short, increase flow timeout:
-```bash
-vi /etc/instamonitor/analyzer.py
-# Find: self.flow_timeout = 60
-# Change to: self.flow_timeout = 120
-```
+1. **Is there a model?**
+   ```sh
+   ls -l model.json
+   ```
+   If missing, the analyzer uses only a crude built-in heuristic. Record data and
+   train (see [Training Problems](#training-problems)).
+2. **Confidence threshold too high.** Flows below `CONFIDENCE_THRESHOLD` are
+   labeled `unknown`. Lower it a bit (carefully):
+   ```sh
+   vi config.conf                      # e.g. CONFIDENCE_THRESHOLD=0.5
+   ```
+3. **Not enough / unbalanced training data.** Check your class counts and record
+   more of the weak ones, then retrain:
+   ```sh
+   cut -d, -f26 data/training_data.csv | sort | uniq -c
+   ```
+4. **Flows too short.** Flows with fewer than `MIN_FLOW_PACKETS` packets are
+   ignored, and a flow is only recorded after `FLOW_TIMEOUT` idle seconds (or on
+   Ctrl+C). Generate sustained traffic, then wait or stop to flush.
+5. **Verify the packet log has data** in the expected 7-field format:
+   ```sh
+   head -5 data/packet_log.txt
+   ```
 
 ---
 
-## Installation Problems
+## Flows Being Dropped
 
-### Insufficient Storage
+**Symptoms:** you clearly used Instagram/TikTok but far fewer flows are recorded
+than expected.
 
-**Symptoms:** Installation fails with "No space left on device"
+**Cause:** `DROP_CONFIRMED_OTHER=true` discards flows whose remote IP is proven
+to belong to an unrelated service. Occasionally a legitimately relevant flow
+could be mis-attributed.
 
-**Solutions:**
+**Fixes:**
 
-1. **Check available space:**
-```bash
-df -h
-```
-
-2. **Clean up space:**
-```bash
-# Remove old package lists
-rm -rf /tmp/opkg-lists/*
-
-# Clean package cache
-opkg clean
-
-# Remove old kernels/modules if safe
-opkg list-installed | grep kernel
-```
-
-3. **Use external storage:**
-```bash
-# Mount USB drive
-mkdir -p /mnt/usb
-mount /dev/sda1 /mnt/usb
-
-# Change install locations in install.sh
-LIB_DIR="/mnt/usb/instamonitor"
-```
-
-### Package Installation Fails
-
-**Symptoms:** opkg install fails
-
-**Solutions:**
-
-1. **Update package lists:**
-```bash
-opkg update
-```
-
-2. **Check internet connectivity:**
-```bash
-ping -c 3 8.8.8.8
-ping -c 3 downloads.openwrt.org
-```
-
-3. **Try alternative mirrors:**
-```bash
-# Check /etc/opkg.conf
-cat /etc/opkg.conf
-```
-
-4. **Install manually:**
-```bash
-# Download package manually
-cd /tmp
-wget http://downloads.openwrt.org/releases/22.03.2/packages/mips_24kc/packages/python3-light_3.10.9-1_mips_24kc.ipk
-opkg install python3-light_3.10.9-1_mips_24kc.ipk
-```
+1. **Keep everything while debugging:**
+   ```sh
+   vi config.conf                      # DROP_CONFIRMED_OTHER=false
+   ```
+2. **Inspect what was resolved** and why a flow was dropped:
+   ```sh
+   cat data/ip_ownership.csv
+   ```
+3. **Disable resolution entirely** (keep all flows, no platform tagging):
+   ```sh
+   vi config.conf                      # IP_FILTER_ENABLED=false
+   ```
 
 ---
 
-## Capture Issues
+## Training Problems
 
-### High Packet Loss
+Training runs on your **laptop**, not the router.
 
-**Symptoms:** Warning messages about dropped packets
-
-**Solutions:**
-
-1. **Increase buffer size:**
-```bash
-vi /etc/instamonitor/capture.sh
-# Find tcpdump line with -B option
-# Increase: -B 2048 to -B 4096
+**`train.py` fails: `No module named sklearn`**
+```sh
+pip install scikit-learn
 ```
+(The router intentionally does **not** have scikit-learn.)
 
-2. **Reduce snapshot length:**
-```bash
-vi /etc/instamonitor/config.conf
-SNAPSHOT_LENGTH=64  # from 96
+**Poor accuracy / confusing report:**
+- Record more sessions, especially for the weakest class in the confusion matrix.
+- Make each session a **single pure activity** with other apps closed.
+- Always include an **`other`** session (no Instagram/TikTok) so the model has a
+  background class.
+- Retrain and copy the new `model.json` back to the router.
+
+**Feature mismatch / weird errors:** make sure the `features.py` you train with
+matches the one on the router (copy both together with `train.py`).
+
+**Deploying the model:**
+```sh
+scp model.json root@router:/root/instamonitor/
 ```
-
-3. **Filter more aggressively:**
-Only capture specific devices:
-```bash
-vi /etc/instamonitor/capture.sh
-# Add to filter: "and host 192.168.1.100"
-```
-
-### Interface Not Found
-
-**Symptoms:** "Device not found" error
-
-**Solutions:**
-
-1. **List available interfaces:**
-```bash
-ifconfig -a
-ip link show
-```
-
-2. **Common interface names:**
-- `br-lan` - LAN bridge (most common)
-- `eth0` / `eth1` - Ethernet interfaces
-- `wlan0` - Wireless interface
-
-3. **Update configuration:**
-```bash
-vi /etc/instamonitor/config.conf
-CAPTURE_INTERFACE=br-lan  # or your interface name
-```
+No restart of training is needed on the router; just make sure `MODEL_PATH`
+points at the file (default `model.json`).
 
 ---
 
-## Classification Problems
+## IP Resolution Problems
 
-### All Traffic Classified as Video Scrolling
-
-**Symptoms:** Chat and video calls not being detected
-
-**Solutions:**
-
-1. **Check bidirectional ratio:**
-```bash
-# Add diagnostic output to analyzer.py
-vi /etc/instamonitor/analyzer.py
-# In classify_flow, add print statements:
-print(f"Bidir ratio: {bidir_ratio}, DL ratio: {download_ratio}")
+**Reverse DNS returns nothing / everything is `unknown`:** many IPs have no PTR
+record. Those flows are **kept** (that's intended). To improve attribution, try
+enabling whois:
+```sh
+opkg install whois
+vi config.conf                        # IP_FILTER_USE_WHOIS=true
 ```
 
-2. **Adjust thresholds:**
-```bash
-vi /etc/instamonitor/config.conf
-# More sensitive chat detection
-CHAT_MAX_PACKETS_PER_SEC=30
-VIDEO_CONF_BIDIRECTIONAL_RATIO=0.2  # from 0.3
+**Test the resolver directly:**
+```sh
+./ipinfo.py 157.240.1.1 8.8.8.8 --whois
 ```
 
-### Misclassification Between Activities
-
-**Symptoms:** Video calls classified as scrolling, etc.
-
-**Solutions:**
-
-1. **Observe actual patterns:**
-```bash
-# Enable debug mode
-vi /etc/instamonitor/config.conf
-LOG_LEVEL=DEBUG
-
-# Use the app while monitoring
-tail -f /var/log/instamonitor.log
+**Stale cache:** clear it to force re-resolution:
+```sh
+: > data/ip_ownership.csv
 ```
 
-2. **Tune specific thresholds:**
-Based on observations, adjust in `config.conf`:
-```bash
-# For your specific network:
-CHAT_PACKET_SIZE_MAX=450
-VIDEO_CONF_MIN_SIZE=400
-VIDEO_CONF_MAX_SIZE=1400
-SCROLL_MIN_AVG_SIZE=1600
-```
-
-3. **Consider network conditions:**
-On slow networks, packet sizes may be different. Adjust accordingly.
+**No internet / DNS on the router:** resolution will fail and all flows stay
+`unknown` (and are kept). Fix the router's DNS, or set `IP_FILTER_ENABLED=false`.
 
 ---
 
 ## Performance Issues
 
-### High CPU Usage
-
-**Symptoms:** Router becomes slow, high CPU in top
-
-**Diagnosis:**
-```bash
+**High CPU:**
+```sh
 top -b -n 1 | grep -E "(capture|analyzer|tcpdump)"
 ```
-
-**Solutions:**
-
-1. **Increase analysis interval:**
-```bash
-vi /etc/instamonitor/config.conf
-ANALYSIS_INTERVAL=30  # from 10
+```sh
+# config.conf
+ANALYSIS_INTERVAL=30      # from 10
+SNAPSHOT_LENGTH=64        # from 96
+IP_FILTER_USE_WHOIS=false # reverse DNS only (whois is slower)
 ```
-
-2. **Reduce packet capture rate:**
-```bash
-vi /etc/instamonitor/capture.sh
-# Add rate limiting to tcpdump:
-# After tcpdump command, add: | pv -L 100k
-```
-
-3. **Limit to specific times:**
-Use cron to start/stop the launcher:
-```bash
-# Start in the morning (background)
-0 7 * * * /etc/instamonitor/run.sh > /var/log/instamonitor.log 2>&1 &
-# Stop at night
+Or run only part of the day with cron:
+```sh
+0 7  * * * /root/instamonitor/run.sh > /root/instamonitor/data/instamonitor.log 2>&1 &
 0 23 * * * killall run.sh tcpdump analyzer.py
 ```
 
-4. **Use nice:**
-```bash
-# Launch with lower priority
-nice -n 19 /etc/instamonitor/run.sh
+**High memory:**
+```sh
+# config.conf
+BUFFER_SIZE=5000          # from 10000
+FLOW_TIMEOUT=30           # from 60 (flush flows sooner)
 ```
 
-### High Memory Usage
-
-**Symptoms:** Out of memory errors, system instability
-
-**Solutions:**
-
-1. **Reduce buffer size:**
-```bash
-vi /etc/instamonitor/config.conf
-BUFFER_SIZE=5000  # from 10000
-```
-
-2. **Increase flow cleanup frequency:**
-```bash
-vi /etc/instamonitor/analyzer.py
-# Find flow_timeout, reduce it:
-self.flow_timeout = 30  # from 60
-```
-
-3. **Process in smaller batches:**
-```bash
-vi /etc/instamonitor/config.conf
-BATCH_SIZE=50  # from 100
-```
-
-### Storage Filling Up
-
-**Symptoms:** Disk full errors
-
-**Solutions:**
-
-1. **Enable automatic cleanup:**
-```bash
-vi /etc/instamonitor/config.conf
+**Storage filling up:**
+```sh
+# config.conf
 AUTO_CLEANUP_ENABLED=true
-MAX_STORAGE_MB=50  # from 100
+MAX_STORAGE_MB=50
 ```
-
-2. **Manual cleanup:**
-```bash
-# View file sizes
-ls -lh /var/lib/instamonitor/
-
-# Remove old flows (keep recent data)
-head -1000 /var/lib/instamonitor/flows.csv > /tmp/flows_new.csv
-mv /tmp/flows_new.csv /var/lib/instamonitor/flows.csv
-
-# Or clean flows older than 7 days using the database module
-python3 /etc/instamonitor/database.py
-```
-
-3. **Archive and compress:**
-```bash
-# Archive old data
-tar -czf /tmp/instamonitor-$(date +%Y%m).tar.gz /var/lib/instamonitor/*.csv
-
-# Clear the CSV files (keep headers)
-for f in /var/lib/instamonitor/*.csv; do
-    head -1 "$f" > "${f}.new"
-    mv "${f}.new" "$f"
-done
-
-# Restart the launcher (Ctrl+C the old one first)
-/etc/instamonitor/run.sh
+Manual trim:
+```sh
+tar -czf data/backup-$(date +%Y%m).tar.gz data/*.csv
+head -1 data/flows.csv > data/flows.new && tail -10000 data/flows.csv >> data/flows.new && mv data/flows.new data/flows.csv
 ```
 
 ---
 
-## CSV File Issues
+## CSV / Storage Issues
 
-### CSV File Corruption
-
-**Symptoms:** Errors reading CSV files, malformed data
-
-**Solutions:**
-
-1. **Check file integrity:**
-```bash
-# View last few lines to check for truncation
-tail -20 /var/lib/instamonitor/flows.csv
-
-# Count lines (should match header + data)
-wc -l /var/lib/instamonitor/*.csv
+**Validate a file:**
+```sh
+python3 -c "import csv; list(csv.DictReader(open('data/daily_stats.csv'))); print('OK')"
 ```
 
-2. **Validate CSV format:**
-```bash
-# Check for proper comma separation
-head -5 /var/lib/instamonitor/daily_stats.csv
-
-# Test with Python
-python3 << EOF
-import csv
-with open('/var/lib/instamonitor/daily_stats.csv') as f:
-    reader = csv.DictReader(f)
-    for i, row in enumerate(reader):
-        if i > 5: break
-        print(row)
-EOF
+**Rebuild a truncated file** (keep header + valid rows):
+```sh
+head -1 data/flows.csv > data/flows.clean
+grep -E '^[0-9]{4}-' data/flows.csv >> data/flows.clean
+mv data/flows.clean data/flows.csv
 ```
 
-3. **Rebuild corrupted file:**
-```bash
-# Backup original
-cp /var/lib/instamonitor/flows.csv /tmp/flows_backup.csv
-
-# Extract valid lines
-head -1 /var/lib/instamonitor/flows.csv > /tmp/flows_clean.csv
-grep -E '^[0-9]{4}-' /tmp/flows_backup.csv >> /tmp/flows_clean.csv
-
-# Replace
-mv /tmp/flows_clean.csv /var/lib/instamonitor/flows.csv
-```
-
-### File Lock Issues
-
-**Symptoms:** "Permission denied" or "file busy" errors
-
-**Solutions:**
-
-1. **Check for processes:**
-```bash
-lsof /var/lib/instamonitor/*.csv
-```
-
-2. **Remove lock files:**
-```bash
-rm -f /var/lib/instamonitor/*.lock
-```
-
-3. **Restart the launcher:**
-```bash
-# Stop the running instance (Ctrl+C or killall), then start again
+**Suspected stale lock:** stop everything and restart:
+```sh
 killall run.sh tcpdump analyzer.py
-/etc/instamonitor/run.sh
+./run.sh
 ```
 
 ---
 
-## Diagnostic Commands
+## Diagnostic Snapshot
 
-### Complete System Check
+Run this from the project directory to gather the essentials:
 
-Run this comprehensive diagnostic:
-
-```bash
-cat > /tmp/instamonitor_diag.sh << 'EOF'
+```sh
 #!/bin/sh
-
-echo "========================================="
-echo "InstaMonitor Diagnostic Report"
-echo "========================================="
-echo ""
-
-echo "=== System Info ==="
-uname -a
-uptime
-echo ""
-
-echo "=== Disk Space ==="
-df -h
-echo ""
-
-echo "=== Memory ==="
-free
-echo ""
-
-echo "=== Installed Packages ==="
-opkg list-installed | grep -E "(python3|tcpdump)"
-echo ""
-
-echo "=== Running Processes ==="
-ps | grep -E "(capture|analyzer|tcpdump)" | grep -v grep
-if ps | grep -q "[c]apture.sh"; then
-    echo "Status: RUNNING"
-else
-    echo "Status: NOT RUNNING"
-fi
-echo ""
-
-echo "=== Configuration ==="
-cat /etc/instamonitor/config.conf
-echo ""
-
-echo "=== IP Lists ==="
-echo "Instagram IPs:"
-wc -l /etc/instamonitor/instagram_ips.txt
-echo "TikTok IPs:"
-wc -l /etc/instamonitor/tiktok_ips.txt
-echo ""
-
-echo "=== File Sizes ==="
-ls -lh /etc/instamonitor/
-ls -lh /var/lib/instamonitor/
-ls -lh /tmp/instamonitor/ 2>/dev/null
-echo ""
-
-echo "=== CSV Data Files ==="
-if [ -d /var/lib/instamonitor ]; then
-    ls -lh /var/lib/instamonitor/*.csv 2>/dev/null || echo "No CSV files yet"
-    echo "Total size:"
-    du -sh /var/lib/instamonitor 2>/dev/null || echo "Directory not found"
-else
-    echo "Data directory not found"
-fi
-echo ""
-
-echo "=== Recent Log (if running in background) ==="
-tail -20 /var/log/instamonitor.log 2>/dev/null || echo "No log file found"
-echo ""
-
-echo "=== Packet Log Status ==="
-if [ -f /tmp/instamonitor/packet_log.txt ]; then
-    echo "File exists"
-    wc -l /tmp/instamonitor/packet_log.txt
-    echo "Sample lines:"
-    head -3 /tmp/instamonitor/packet_log.txt
-else
-    echo "Packet log not found"
-fi
-echo ""
-
-echo "=== Network Interfaces ==="
-ifconfig | grep -E "^[a-z]|inet addr"
-echo ""
-
-echo "========================================="
-echo "Diagnostic Complete"
-echo "========================================="
-EOF
-
-chmod +x /tmp/instamonitor_diag.sh
-/tmp/instamonitor_diag.sh
+cd "$(dirname "$0")"
+echo "=== System ===";        uname -a; uptime
+echo "=== Packages ===";      opkg list-installed | grep -E "(python3-light|python3-decimal|tcpdump|whois)"
+echo "=== Processes ===";     ps | grep -E "(capture|analyzer|tcpdump)" | grep -v grep || echo "not running"
+echo "=== Config ===";        cat config.conf
+echo "=== Model ===";         ls -l model.json 2>/dev/null || echo "no model.json (heuristic fallback)"
+echo "=== Training rows ===";  [ -f data/training_data.csv ] && cut -d, -f26 data/training_data.csv | sort | uniq -c
+echo "=== Data files ===";    ls -lh data/*.csv 2>/dev/null || echo "no CSV yet"
+echo "=== Packet log ===";    [ -f data/packet_log.txt ] && { wc -l data/packet_log.txt; head -3 data/packet_log.txt; } || echo "none"
+echo "=== IP cache ===";      [ -f data/ip_ownership.csv ] && tail -5 data/ip_ownership.csv
+echo "=== Interfaces ===";    ifconfig | grep -E "^[a-z]|inet addr"
 ```
-
-### Export Diagnostic Report
-
-```bash
-# Run diagnostic and save to file
-/tmp/instamonitor_diag.sh > /tmp/diagnostic_report.txt
-
-# Copy to computer
-scp root@router:/tmp/diagnostic_report.txt ~/Downloads/
-```
-
----
-
-## Getting Help
-
-If you're still experiencing issues:
-
-1. **Run the diagnostic script above**
-2. **Run `run.sh` in the foreground** to see errors directly, or check your log file if running in the background
-3. **Test components individually:**
-   - Run capture.sh manually
-   - Run analyzer.py manually
-   - Test database.py
-4. **Check the GitHub issues** for similar problems
-5. **Create a new issue** with:
-   - Diagnostic report
-   - Steps to reproduce
-   - Expected vs actual behavior
-   - Router model and OpenWrt version
-
----
-
-## Advanced Debugging
-
-### Enable Python Debugging
-
-```bash
-vi /etc/instamonitor/analyzer.py
-# Add at top of main():
-import logging
-logging.basicConfig(level=logging.DEBUG)
-```
-
-### Trace Packet Flow
-
-```bash
-# Terminal 1: Watch captures
-tail -f /tmp/instamonitor/packet_log.txt
-
-# Terminal 2: Watch analyzer
-tail -f /var/log/instamonitor.log
-
-# Terminal 3: Test with specific app
-# Use Instagram/TikTok on phone
-```
-
-### Network Packet Analysis
-
-```bash
-# Capture sample for analysis
-tcpdump -i br-lan -w /tmp/sample.pcap -c 1000 "tcp port 443"
-
-# Transfer to computer and open in Wireshark
-scp root@router:/tmp/sample.pcap ~/Downloads/
-
-# Analyze patterns in Wireshark:
-# - Statistics -> Conversations
-# - Statistics -> I/O Graphs
-# - Analyze packet sizes and timing
-```
-
-This will help you understand actual traffic patterns and tune classification accordingly.

@@ -1,333 +1,191 @@
-# InstaMonitor - Project Overview
+# InstaMonitor — Project Overview
 
 ## What is InstaMonitor?
 
-InstaMonitor is a lightweight network monitoring system for OpenWrt routers that analyzes Instagram and TikTok usage patterns. It works by examining encrypted traffic metadata (packet sizes, timing, and flow patterns) to classify activities into three categories:
+InstaMonitor is a lightweight, self-contained network monitor for OpenWrt
+routers. It infers **how** a phone is using Instagram and TikTok — chatting,
+video calling, or scrolling reels — from **encrypted traffic metadata** alone
+(packet sizes, timing, direction). Nothing is decrypted.
 
-1. **Chatting/Messaging** - Direct messages, comments
-2. **Video Conferencing** - Live streams, video calls  
-3. **Video Scrolling** - Browsing feeds, watching Reels/TikToks
+Classification is done by a **supervised Random Forest** that you train on your
+own labeled traffic. This replaced an earlier hand-tuned threshold approach that
+couldn't reliably separate the activities on encrypted flows.
 
-## Key Features
+## Design Principles
 
-- ✅ **Privacy-Focused**: Only analyzes metadata, never decrypts content
-- ✅ **Lightweight**: Optimized for resource-constrained routers
-- ✅ **Automatic Classification**: ML-inspired pattern recognition
-- ✅ **CSV Storage**: Simple, portable files for easy analysis
-- ✅ **Easy Installation**: One-command setup
-- ✅ **Detailed Statistics**: Per-device, per-platform reporting
-- ✅ **Configurable**: Adjustable thresholds and settings
+- **Metadata only** — never decrypt, never read content, never store payloads.
+- **Self-contained** — everything runs from the project directory; runtime data
+  goes only into `./data/`; nothing is written to `/etc`, `/var`, or `/tmp`.
+- **Router-light** — the router never runs `scikit-learn`; it only evaluates a
+  tiny dependency-free `model.json` with the Python standard library.
+- **Learn, don't guess** — accuracy comes from labeled data + retraining, not
+  from hand-tuned size/rate cut-offs.
+- **Keep-when-unsure** — the runtime IP filter only drops flows it can *prove*
+  are unrelated; ambiguous flows are always kept.
 
-## How It Works
-
-### Architecture
+## Architecture
 
 ```
-[WiFi Devices] 
-    ↓
-[OpenWrt Router] → [tcpdump] → [capture.sh] → [packet_log.txt]
-    ↓                                              ↓
-[analyzer.py] ← reads packets ← [packet_log.txt]
-    ↓
-[Traffic Classification]
-    ↓
-[database.py] → [CSV Files: flows.csv, hourly_stats.csv, daily_stats.csv]
-    ↓
-[instamonitor-stats] → [Reports/Export CSV]
+[ Phone on Wi-Fi ]
+        │  HTTPS / QUIC (port 443)
+        ▼
+[ OpenWrt router ]
+                      ┌──────────────────────── training path (offline) ─────────────────────────┐
+   capture.sh         │  label.sh ─▶ features.py ─▶ data/training_data.csv                        │
+      │  tcpdump       │        (copy to laptop)  ─▶ train.py + scikit-learn ─▶ model.json         │
+      ▼               └────────────────────────────────────────────────────────────┬─────────────┘
+   parse_packets.awk                                                                │ (copy back)
+      │  ts|proto|src|sport|dst|dport|len                                           ▼
+      ▼                                                              ┌──────────────────────────┐
+   data/packet_log.txt ──tail──▶ analyzer.py ──▶ classify ─────────▶│ model.py reads model.json│
+                                     │  features.py (25 features)    └──────────────────────────┘
+                                     │  ipinfo.py (keep/drop + tag)
+                                     ▼
+                                  database.py ──▶ data/*.csv ──▶ stats.py
 ```
 
-### Classification Logic
+## Components
 
-**Chat Detection:**
-- Small packets (< 500 bytes)
-- Bidirectional traffic (both sending/receiving)
-- 2-20 packets per second
-- Sporadic timing
+### Capture
+- **`capture.sh`** — runs `tcpdump` on `CAPTURE_INTERFACE`, filtered to the
+  monitored phone(s) (`DEVICE_IPS`) on TCP/UDP port 443, and pipes the output
+  through the parser. Captures only short headers (`SNAPSHOT_LENGTH`, default
+  96 bytes).
+- **`parse_packets.awk`** — converts `tcpdump -q` lines into the 7-field record
+  `epoch_ts|proto|src_ip|src_port|dst_ip|dst_port|length`. Skips IPv6 and ARP.
 
-**Video Conference Detection:**
-- Medium packets (500-1500 bytes)
-- Strong bidirectional flow (30%+ both ways)
-- Consistent rate (10+ packets/sec)
-- Steady timing
+### Flow assembly & features
+- **`features.py`** — the single source of truth for the **25** flow features
+  (packet counts/sizes, per-direction size stats, inter-arrival timing stats,
+  download ratio, bidirectional ratio, burst ratio, …). Provides `Flow`,
+  `FlowTable`, packet parsing, the 5-tuple flow key, and an offline extraction
+  CLI used by `label.sh`.
+- **`analyzer.py`** — tails `data/packet_log.txt`, assembles flows keyed on
+  `(proto, local_ip, local_port, remote_ip, remote_port)`, resolves remote-IP
+  ownership, classifies each finished flow, and records it via `database.py`.
 
-**Video Scroll Detection:**
-- Large packets (> 1500 bytes average)
-- Mostly download (80%+ one direction)
-- Bursty patterns (video loading)
-- Variable timing
+### Classification
+- **`model.py`** — pure-stdlib Random Forest evaluator. Loads `model.json`,
+  averages per-tree leaf distributions (soft voting), and returns
+  `(label, confidence)` — or `unknown` when confidence is below the threshold.
+- **`train.py`** — **laptop-only** scikit-learn trainer. Trains a
+  `RandomForestClassifier` (`class_weight='balanced'`) and exports the trees to
+  dependency-free `model.json`. Prints report, confusion matrix, CV accuracy,
+  and feature importances.
 
-## System Components
+### IP ownership
+- **`ipinfo.py`** — resolves each remote IP's owner at runtime via reverse DNS
+  (and optional whois), classifies it as `instagram` / `tiktok` / `other` /
+  `unknown`, and caches results in `data/ip_ownership.csv`. Deliberately leaves
+  shared CDNs (Akamai/Fastly/Cloudflare/Amazon) as `unknown` so their flows are
+  kept.
 
-### 1. Packet Capture (`capture.sh`)
-- Runs tcpdump with optimized filters
-- Captures only packet headers (96 bytes)
-- Filters by Instagram/TikTok IP addresses
-- Outputs to named pipe and log file
-- Minimal CPU/memory footprint
+### Labeling, storage, reporting, orchestration
+- **`label.sh`** — records one labeled session into `data/training_data.csv`.
+- **`database.py`** — CSV storage with hourly/daily aggregation and `fcntl`
+  file locking.
+- **`stats.py`** — command-line reporting and CSV export (reads
+  `data/daily_stats.csv`).
+- **`run.sh`** — launcher that starts capture + analyzer and shuts both down
+  cleanly.
+- **`install.sh`** — installs packages and marks scripts executable.
+- **`config.conf`** — all configuration.
 
-### 2. Traffic Analyzer (`analyzer.py`)
-- Reads packet data in real-time
-- Groups packets into flows
-- Analyzes flow characteristics
-- Classifies activity type
-- Updates database
-- Written in Python 3 for maintainability
+## Classification Pipeline (per flow)
 
-### 3. Database Module (`database.py`)
-- CSV file storage (portable and simple)
-- Tracks devices, flows, hourly and daily stats
-- Automatic aggregation
-- File locking for concurrent access
-- Automatic cleanup and rotation
-- No external dependencies
-
-### 4. Statistics Tool (`instamonitor-stats`)
-- Command-line reporting
-- Filter by device, date, platform
-- CSV export capability
-- Human-readable format
-
-### 5. IP Update Helper (`update_ips.sh`)
-- Discover current IPs via DNS
-- Monitor actual traffic
-- Interactive menu
-- Automated updates
-
-### 6. Installation Script (`install.sh`)
-- One-command deployment
-- Dependency installation
-- Configuration setup
-- Installs the `run.sh` launcher and stats utility
-
-### 7. Launcher (`run.sh`)
-- Starts packet capture and analyzer together
-- Clean shutdown of both on Ctrl+C
-- Runs from the command line (no background service)
+1. Skip if the flow has fewer than `MIN_FLOW_PACKETS` packets.
+2. Resolve the remote IP's owner (`ipinfo.py`):
+   - If `DROP_CONFIRMED_OTHER` and the owner is a confirmed unrelated service →
+     **drop** the flow.
+   - If the owner is Instagram or TikTok → set that as the flow's platform.
+   - Otherwise keep the flow with an unknown platform.
+3. Compute the 25 features and run `model.py`:
+   - Return the model's label if confidence ≥ `CONFIDENCE_THRESHOLD`.
+   - Otherwise label the flow `unknown`.
+   - If no `model.json` exists, fall back to a simple built-in heuristic.
+4. Record the flow (platform + activity) via `database.py`.
 
 ## File Structure
 
 ```
 instamonitor/
-├── README.md              # Main documentation
-├── QUICKSTART.md          # 5-minute setup guide
-├── USAGE.md               # Detailed usage instructions
-├── TROUBLESHOOTING.md     # Problem-solving guide
-├── CSV_FORMAT.md          # CSV file format documentation
+├── README.md              # Overview and quick workflow
+├── QUICKSTART.md          # Step-by-step setup
+├── USAGE.md               # Full usage guide
+├── TROUBLESHOOTING.md     # Problem solving
+├── PROJECT_OVERVIEW.md    # This document
+├── CSV_FORMAT.md          # CSV schemas
+├── CSV_STORAGE.md         # CSV analysis recipes
 ├── LICENSE                # MIT license
-├── config.conf            # Main configuration
-├── capture.sh             # Packet capture script
-├── analyzer.py            # Traffic analysis engine
-├── database.py            # CSV file management
-├── run.sh                 # Command-line launcher
-├── install.sh             # Installation script
-├── update_ips.sh          # IP update helper
-├── instagram_ips.txt      # Instagram IP ranges
-└── tiktok_ips.txt         # TikTok IP ranges
+├── config.conf            # Configuration (KEY=value)
+├── capture.sh             # Packet capture (tcpdump)
+├── parse_packets.awk      # tcpdump → 7-field record parser
+├── analyzer.py            # Flow assembly + classification
+├── features.py            # 25-feature extractor (+ offline CLI)
+├── model.py               # Pure-stdlib Random Forest evaluator (router)
+├── train.py               # scikit-learn trainer (laptop) → model.json
+├── ipinfo.py              # Runtime IP ownership resolver + cache
+├── label.sh               # Labeled-session recorder
+├── database.py            # CSV storage + aggregation
+├── stats.py               # Reporting / export
+├── run.sh                 # Launcher
+├── install.sh             # Setup
+└── data/                  # Runtime data (created at runtime)
+    ├── packet_log.txt     # Transient packet records
+    ├── flows.csv          # Classified flows
+    ├── hourly_stats.csv   # Hourly aggregates
+    ├── daily_stats.csv    # Daily aggregates (read by stats.py)
+    ├── devices.csv        # Device registry
+    ├── training_data.csv  # Labeled features from label.sh
+    └── ip_ownership.csv   # Resolved remote-IP owners (cache)
 ```
 
-## Installation Summary
+Note: `model.json` is produced by `train.py` on your laptop and copied into the
+project directory; it isn't shipped in the repo.
 
-1. **Transfer files** to router via SCP
-2. **Run install.sh** - handles all dependencies
-3. **Configure** (optional) - edit config.conf
-4. **Start monitoring** - `/etc/instamonitor/run.sh` (Ctrl+C to stop)
-5. **Verify** - check running processes and stats
+## Runtime Data Format
 
-**Time required:** 5-10 minutes
-**Storage required:** ~50MB
-**Skill level:** Basic Linux/SSH knowledge
+**Packet log** (`data/packet_log.txt`), one record per line:
 
-## Usage Summary
-
-```bash
-# Daily workflow
-instamonitor-stats --today
-
-# Per-device analysis
-instamonitor-stats --device 192.168.1.100 --week
-
-# Export data
-instamonitor-stats --today --export stats.csv
-
-# Update IPs monthly
-sh /etc/instamonitor/update_ips.sh
-
-# Monitor real-time
-tail -f /var/log/instamonitor.log
 ```
+epoch_ts|proto|src_ip|src_port|dst_ip|dst_port|length
+```
+
+**Flow key:** `(proto, local_ip, local_port, remote_ip, remote_port)`, normalized
+so the LAN endpoint is "local" (detected via the private ranges `192.168.`,
+`10.`, `172.16–31.`).
 
 ## Performance Characteristics
 
-**Tested on Netgear WNDR3700 v4:**
-- CPU: 5-15% average
-- RAM: 8-12 MB
-- Storage: 5-10 MB/day (with rotation)
-- Latency impact: None (passive monitoring)
+Developed on a Netgear WNDR3700 v4 (MIPS, modest CPU):
 
-**Scalability:**
-- Handles 10-20 simultaneous devices
-- Processes 100-500 packets/second
-- Database: 100MB default (configurable)
+- Captures only short headers (default 96 bytes).
+- Each remote IP is resolved once and cached, so IP resolution overhead is
+  negligible in steady state.
+- The router evaluates a compact JSON forest — no heavy ML runtime.
+- Tunables (`ANALYSIS_INTERVAL`, `SNAPSHOT_LENGTH`, `BUFFER_SIZE`,
+  `FLOW_TIMEOUT`) let you trade freshness for load.
 
-## Technical Details
+## Privacy & Legal
 
-### Packet Capture Strategy
-- **Snapshot length**: 96 bytes (headers only)
-- **Filter**: HTTPS/QUIC (ports 443)
-- **Buffer**: 2MB ring buffer
-- **Output**: Line-buffered text format
+**Does:** analyze packet metadata (size, timing, direction), record connection
+endpoints, measure data usage and session duration, classify activity patterns.
 
-### Flow Analysis
-- **Flow timeout**: 60 seconds
-- **Minimum packets**: 5 for classification
-- **Analysis interval**: 10 seconds (configurable)
-- **Metrics tracked**:
-  - Packet count and size
-  - Bidirectional ratio
-  - Packet rate
-  - Burstiness
-  - Timing patterns
+**Does not:** decrypt TLS/HTTPS, read message content, capture credentials,
+store payloads, or perform any man-in-the-middle.
 
-### Database Schema
+**Requirements:** authorization to monitor the network, user notification (as
+required by jurisdiction), and compliance with local privacy law (e.g. GDPR).
 
-CSV files with the following structure:
+## Limitations
 
-- **devices.csv**: Device registry
-- **flows.csv**: Detailed flow classifications  
-- **hourly_stats.csv**: Hourly aggregations
-- **daily_stats.csv**: Daily summaries
+- Accuracy depends entirely on the quality and coverage of your training data —
+  record varied sessions and retrain.
+- VPN/proxy tunnels can't be classified (endpoints and patterns are hidden).
+- Shared CDNs make platform attribution imperfect; such flows are kept but may
+  carry an unknown platform.
+- Very short flows (< `MIN_FLOW_PACKETS`) are ignored by design.
 
-See [CSV_FORMAT.md](CSV_FORMAT.md) for complete format documentation.
+## License
 
-## Privacy & Legal Considerations
-
-### What InstaMonitor Does:
-- ✅ Analyzes packet metadata (size, timing, direction)
-- ✅ Tracks connection endpoints (IP addresses)
-- ✅ Measures data usage and session duration
-- ✅ Classifies activity patterns
-
-### What InstaMonitor Does NOT Do:
-- ❌ Decrypt HTTPS/TLS traffic
-- ❌ Read message content
-- ❌ Capture passwords or credentials
-- ❌ Store packet payloads
-- ❌ Perform man-in-the-middle attacks
-
-### Legal Requirements:
-- Network administrator authorization required
-- User notification recommended/required (varies by jurisdiction)
-- Compliance with local privacy laws (GDPR, etc.)
-- Legitimate network management purpose
-
-## Limitations & Accuracy
-
-### Known Limitations:
-1. **Classification accuracy**: 70-85% typical
-2. **IP changes**: Social media platforms change IPs frequently
-3. **VPN/proxy**: Cannot classify encrypted tunnels
-4. **Mixed activity**: Short sessions may be misclassified
-5. **Network conditions**: Variable latency affects patterns
-
-### Accuracy Factors:
-- **Improves over time** as patterns become clearer
-- **Requires sufficient data** (at least 5 packets per flow)
-- **Depends on up-to-date IP lists**
-- **Affected by network conditions**
-
-### Recommendations for Best Results:
-1. Monitor for 24+ hours before drawing conclusions
-2. Update IP addresses monthly
-3. Tune thresholds based on your network
-4. Compare multiple devices for patterns
-5. Consider time-of-day variations
-
-## Customization & Extensibility
-
-### Easy Modifications:
-
-**Add new platforms:**
-- Create new IP list file
-- Update capture filter
-- Add platform to database
-
-**Adjust classifications:**
-- Edit thresholds in config.conf
-- Tune based on observed patterns
-- Add new activity types in analyzer.py
-
-**Change storage:**
-- Modify database.py for different backend
-- Export to external systems
-- Integrate with monitoring tools
-
-**Performance tuning:**
-- Adjust analysis interval
-- Change buffer sizes
-- Modify flow timeout
-
-## Support & Resources
-
-### Documentation:
-- [README.md](README.md) - Project overview
-- [QUICKSTART.md](QUICKSTART.md) - Fast setup
-- [USAGE.md](USAGE.md) - Detailed guide
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Problem solving
-
-### Getting Help:
-1. Check troubleshooting guide
-2. Run diagnostic script
-3. Review logs carefully
-4. Search existing issues
-5. Create new issue with details
-
-### Contributing:
-- Report bugs and issues
-- Suggest improvements
-- Share classification threshold findings
-- Update IP address ranges
-- Improve documentation
-
-## Future Enhancements
-
-Potential additions:
-- Web dashboard for visualization
-- Real-time alerting
-- Machine learning for better classification
-- Additional platform support
-- Parent control integration
-- Grafana/Prometheus export
-- Mobile app for statistics
-- Automatic IP discovery
-
-## Credits & License
-
-**License:** MIT License  
-**Author:** InstaMonitor Contributors  
-**Year:** 2026
-
-Built with:
-- OpenWrt (OS)
-- Python 3 (Analysis)
-- tcpdump (Capture)
-- CSV files (Storage)
-- Shell scripts (Glue)
-
-## Conclusion
-
-InstaMonitor provides a practical, privacy-respecting way to understand social media usage patterns on your network. While not perfect, it offers valuable insights into how time and data are being spent without compromising user privacy through content inspection.
-
-Perfect for:
-- Parents monitoring family usage
-- Network administrators understanding traffic
-- Researchers studying behavior patterns
-- Anyone curious about their network activity
-
-**Remember:** Use responsibly, legally, and ethically. Inform users and respect privacy.
-
----
-
-**Questions? Issues? Improvements?**  
-Check the documentation or create an issue on GitHub.
-
-**Happy monitoring! 📊**
+MIT License — see [LICENSE](LICENSE).

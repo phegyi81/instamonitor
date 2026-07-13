@@ -1,443 +1,321 @@
 # InstaMonitor Usage Guide
 
 ## Table of Contents
-1. [Quick Start](#quick-start)
-2. [Monitoring Traffic](#monitoring-traffic)
-3. [Viewing Statistics](#viewing-statistics)
-4. [Understanding Classifications](#understanding-classifications)
-5. [Updating IP Addresses](#updating-ip-addresses)
-6. [Performance Tuning](#performance-tuning)
-7. [Data Export](#data-export)
+1. [The Workflow at a Glance](#the-workflow-at-a-glance)
+2. [Recording Training Data](#recording-training-data)
+3. [Training the Model](#training-the-model)
+4. [Running the Monitor](#running-the-monitor)
+5. [Viewing Statistics](#viewing-statistics)
+6. [Understanding Classifications](#understanding-classifications)
+7. [On-the-fly IP Ownership Resolution](#on-the-fly-ip-ownership-resolution)
+8. [Performance Tuning](#performance-tuning)
+9. [Data Export](#data-export)
+10. [Maintenance](#maintenance)
 
-## Quick Start
+All commands assume you are in the project directory (where `run.sh` lives).
+Everything runs self-contained from here; runtime data goes into `./data/`.
 
-### Starting InstaMonitor
+## The Workflow at a Glance
 
-All commands below assume you are in the project directory (where `run.sh`
-lives). Everything runs self-contained from here.
-
-```bash
-# Start monitoring in the foreground (press Ctrl+C to stop)
-./run.sh
-
-# Or start in the background, logging output to a file
-./run.sh > data/instamonitor.log 2>&1 &
-
-# Check if it's running
-ps | grep -E "(capture|analyzer|tcpdump)"
+```
+label.sh  ──▶  data/training_data.csv  ──▶  train.py (laptop)  ──▶  model.json
+                                                                        │
+                                                                        ▼
+                              config.conf  ──▶  run.sh  ──▶  analyzer.py + model.py
+                                                                        │
+                                                                        ▼
+                                                     data/*.csv  ──▶  stats.py
 ```
 
-You can also point it at a specific config file:
+1. **Record** labeled sessions with `label.sh`.
+2. **Train** a Random Forest on your laptop with `train.py`, producing `model.json`.
+3. **Copy** `model.json` to the router.
+4. **Run** `run.sh` to capture and classify live traffic.
+5. **Report** with `stats.py`.
 
-```bash
+## Recording Training Data
+
+The classifier only knows what you teach it. `label.sh` captures one device's
+traffic for a fixed time and tags every resulting flow with a label.
+
+```sh
+label.sh <label> [duration_seconds] [device_ip] [interface]
+```
+
+- `label` — one of `chat`, `video_call`, `reels`, `other` (any string works)
+- `duration` — seconds to record (default `300`)
+- `device_ip` — LAN IP of the phone (default: first entry in `DEVICE_IPS`)
+- `interface` — capture interface (default: `CAPTURE_INTERFACE`, i.e. `br-lan`)
+
+### Good labeling practice
+
+- Do **one pure activity at a time**, with other apps closed.
+- Record a dedicated **`other`** session — normal usage with **no** Instagram or
+  TikTok open — so the model learns background traffic and doesn't force it into
+  a real class.
+- Record several sessions per label, on different days / network conditions.
+- More data ⇒ better accuracy.
+
+```sh
+./label.sh chat        300
+./label.sh video_call  300
+./label.sh reels       300
+./label.sh other       300
+```
+
+Each run appends feature rows to `data/training_data.csv` (25 feature columns +
+a final `label` column). Check your class balance:
+
+```sh
+cut -d, -f26 data/training_data.csv | sort | uniq -c
+```
+
+## Training the Model
+
+`scikit-learn` is too heavy for the router, so training runs on your laptop and
+only the tiny `model.json` goes back to the router.
+
+```sh
+# On the laptop (needs: pip install scikit-learn)
+./train.py --input training_data.csv --output model.json
+```
+
+Useful options:
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `--input` | `data/training_data.csv` | Labeled dataset. |
+| `--output` | `model.json` | Where to write the exported model. |
+| `--trees` | `200` | Number of trees in the forest. |
+| `--max-depth` | (none) | Optional depth cap. |
+| `--threshold` | `0.6` | Confidence below which a flow becomes `unknown`. |
+| `--test-size` | `0.25` | Hold-out fraction for the report. |
+| `--seed` | `42` | Random seed for reproducibility. |
+
+`train.py` prints a **classification report**, **confusion matrix**,
+**cross-validation accuracy**, and **feature importances**. Use these to decide
+whether the model is good enough before copying it to the router. If a class is
+weak, record more sessions for it and retrain.
+
+The exported `model.json` is dependency-free JSON (trees stored as plain
+arrays); `model.py` on the router evaluates it with the Python standard library
+only.
+
+## Running the Monitor
+
+```sh
+# Foreground (Ctrl+C to stop and flush all pending flows)
+./run.sh
+
+# Background, logging to a file
+./run.sh > data/instamonitor.log 2>&1 &
+
+# Point at a specific config file
 sh run.sh config.conf
 ```
 
-### Stopping InstaMonitor
+`run.sh` starts `capture.sh` (tcpdump) and `analyzer.py` together and shuts both
+down cleanly on Ctrl+C / TERM.
 
-```bash
-# Foreground run: press Ctrl+C
+Check status:
 
-# Background run: stop all components
+```sh
+ps | grep -E "(capture|analyzer|tcpdump)" | grep -v grep
+```
+
+Stop a background run:
+
+```sh
 killall run.sh tcpdump analyzer.py
-
-# Verify it stopped
-ps | grep -E "(capture|analyzer|tcpdump)"
 ```
 
-## Monitoring Traffic
+### When is a flow recorded?
 
-### Real-time Monitoring
-
-When running in the foreground, classifications print directly to your terminal.
-When running in the background, watch the log file:
-
-```bash
-tail -f data/instamonitor.log
-```
-
-You'll see classifications like:
-```
-192.168.1.100 -> video_scroll: 45.2s, 387 packets, 1250.5KB down
-192.168.1.101 -> chat: 12.5s, 48 packets, 25.3KB down
-192.168.1.102 -> video_conference: 180.3s, 2401 packets, 850.2KB down
-```
-
-### Check Running Status
-
-```bash
-# View process status
-top -b -n 1 | grep -E "(capture|analyzer|tcpdump)"
-```
+A flow is written once it is considered finished — after `FLOW_TIMEOUT` idle
+seconds (default 60), or immediately for all open flows when you stop with
+Ctrl+C. Flows with fewer than `MIN_FLOW_PACKETS` packets are ignored.
 
 ## Viewing Statistics
 
-### Today's Statistics
+`stats.py` reads the aggregated `data/daily_stats.csv`.
 
-```bash
+```sh
 ./stats.py --today
+./stats.py --yesterday
+./stats.py --week
+./stats.py --device 192.168.1.100 --today
+./stats.py --today --export data/today.csv
 ```
 
-Output:
+Example:
+
 ```
 Statistics for all devices
-Period: 2026-07-02 to 2026-07-02
+Period: 2026-07-07 to 2026-07-07
 
 ================================================================================
-Platform     Activity             Duration        Data            Sessions  
+Platform     Activity             Duration        Data            Sessions
 ================================================================================
-instagram    chat                 00:15:30        5.25 MB         12        
-instagram    video_scroll         02:30:15        450.75 MB       8         
-tiktok       video_scroll         01:45:20        380.50 MB       15        
-tiktok       video_conference     00:25:10        125.25 MB       2         
+instagram    chat                 00:15:30        5.25 MB         12
+instagram    reels                02:30:15        450.75 MB       8
+tiktok       reels                01:45:20        380.50 MB       15
+tiktok       video_call           00:25:10        125.25 MB       2
 ================================================================================
-TOTAL                             04:56:15        961.75 MB                 
+TOTAL                             04:56:15        961.75 MB
 ================================================================================
-```
-
-### Device-Specific Statistics
-
-```bash
-# View stats for a specific device
-./stats.py --device 192.168.1.100 --today
-
-# Last week's stats
-./stats.py --device 192.168.1.100 --week
-
-# All-time stats
-./stats.py --device 192.168.1.100
-```
-
-### Export to CSV
-
-```bash
-# Export today's data
-./stats.py --today --export data/stats_today.csv
-
-# Transfer to your computer
-scp root@router:/path/to/instamonitor/data/stats_today.csv ~/Downloads/
 ```
 
 ## Understanding Classifications
 
-### Activity Types
+The activity classes are exactly the labels you trained with. The recommended
+set and their typical traffic signatures:
 
-#### 1. **Chat** (Messaging/DMs)
-- **Characteristics:**
-  - Small packet sizes (< 500 bytes average)
-  - Bidirectional traffic (both sending and receiving)
-  - Sporadic packet timing
-  - 2-20 packets per second
+### chat — messaging / DMs
+- Small packets, bidirectional, sporadic timing.
+- DMs, comments, story replies, quick reactions.
 
-- **What it captures:**
-  - Direct messages
-  - Comments being typed and sent
-  - Story replies
-  - Quick reactions
+### video_call — live / calls
+- Medium packets, steady rate, strongly bidirectional.
+- Watching or joining Lives, video calls.
 
-#### 2. **Video Conference** (Live streaming/calls)
-- **Characteristics:**
-  - Medium packet sizes (500-1500 bytes)
-  - Steady bidirectional flow
-  - Consistent packet rate (10+ packets/sec)
-  - At least 30% traffic in both directions
+### reels — scrolling short video
+- Large packets, mostly download, bursty as clips preload.
+- Reels, TikTok feed, Stories.
 
-- **What it captures:**
-  - Instagram/TikTok Live watching
-  - Live streaming participation
-  - Video calls (if supported)
+### other — background traffic
+- Anything the phone does that isn't Instagram/TikTok you care about.
+- Present so the model has a "none of the above" class.
 
-#### 3. **Video Scroll** (Content browsing)
-- **Characteristics:**
-  - Large packets (> 1500 bytes average)
-  - Mostly download traffic (80%+)
-  - Bursty patterns (video loading)
-  - Variable packet rate
+### unknown — low confidence
+- Not a trained label. Assigned automatically when the model's top-class
+  probability is below `CONFIDENCE_THRESHOLD`. Prevents confident-looking
+  misclassification of traffic the model hasn't really learned.
 
-- **What it captures:**
-  - Scrolling through feed
-  - Watching Reels/TikToks
-  - Browsing Stories
-  - Loading images and videos
+If you see too much `unknown`: record more training data, or (carefully) lower
+`CONFIDENCE_THRESHOLD` in `config.conf`.
 
-#### 4. **Unknown**
-- Traffic that doesn't fit the above patterns
-- Very short sessions
-- Unusual traffic patterns
-- May include app updates, API calls, etc.
+## On-the-fly IP Ownership Resolution
 
-## Updating IP Addresses
+Instead of maintaining lists of Instagram/TikTok IP ranges (which change
+constantly and share CDNs), InstaMonitor resolves each remote IP's owner at
+runtime and caches the result in `data/ip_ownership.csv`.
 
-Instagram and TikTok periodically change their server IPs. Update them to maintain accuracy:
+For every new remote IP the resolver (`ipinfo.py`) does:
 
-### Finding Current IPs
+1. **Reverse DNS** (and optional **whois** if `IP_FILTER_USE_WHOIS=true`).
+2. Matches the hostname against known patterns:
+   - Instagram/Meta (`instagram`, `fbcdn`, `facebook`, `meta`…) ⇒ tag `instagram`
+   - TikTok/ByteDance (`tiktok`, `tiktokcdn`, `byteoversea`, `bytedance`,
+     `muscdn`…) ⇒ tag `tiktok`
+   - Clearly unrelated (`googlevideo`, `youtube`, `netflix`, `spotify`,
+     `apple`, `windowsupdate`, `whatsapp`…) ⇒ mark `other`
+3. Anything it can't prove — including shared CDNs like Akamai, Fastly,
+   Cloudflare, Amazon — stays **unknown** and is **kept**.
 
-```bash
-# On your router
-dig instagram.com +short
-dig i.instagram.com +short
-dig api.instagram.com +short
+Relevant `config.conf` settings:
 
-dig tiktok.com +short
-dig www.tiktok.com +short
+```sh
+IP_FILTER_ENABLED=true      # turn resolution on/off
+DROP_CONFIRMED_OTHER=true   # drop flows proven unrelated (set false to keep all)
+IP_FILTER_USE_WHOIS=false   # also consult whois (needs the 'whois' package)
+IP_OWNERSHIP_CACHE=data/ip_ownership.csv
 ```
 
-### Method 1: DNS Monitoring
+Design principle: it only drops a flow when it is **certain** the flow is
+unrelated. Ambiguity is always resolved in favor of keeping the flow, because
+Instagram/TikTok are frequently served from shared CDNs.
 
-Monitor DNS queries to see which domains are being accessed:
+You can inspect or pre-warm the cache directly:
 
-```bash
-# Enable DNS logging in OpenWrt
-uci set dhcp.@dnsmasq[0].logqueries=1
-uci commit dhcp
-/etc/init.d/dnsmasq restart
-
-# Watch DNS queries
-logread -f | grep dnsmasq | grep -E "(instagram|tiktok)"
-```
-
-### Method 2: Network Capture
-
-Capture HTTPS traffic temporarily and see destinations:
-
-```bash
-tcpdump -i br-lan -n "tcp port 443" | grep -E "(instagram|tiktok)"
-```
-
-### Adding New IPs
-
-1. Edit the IP list files:
-```bash
-vi instagram_ips.txt
-vi tiktok_ips.txt
-```
-
-2. Add new IP ranges (one per line):
-```
-157.240.50.0/24
-```
-
-3. Restart InstaMonitor:
-```bash
-# Stop the running instance (Ctrl+C or killall), then start again:
-./run.sh
-```
-
-### Automatic IP Discovery Script
-
-Create a helper script to discover IPs:
-
-```bash
-cat > /tmp/find_social_ips.sh << 'EOF'
-#!/bin/sh
-echo "Instagram IPs:"
-dig +short instagram.com i.instagram.com api.instagram.com | sort -u
-
-echo -e "\nTikTok IPs:"
-dig +short tiktok.com www.tiktok.com api.tiktok.com | sort -u
-EOF
-
-chmod +x /tmp/find_social_ips.sh
-/tmp/find_social_ips.sh
+```sh
+./ipinfo.py 157.240.1.1 1.2.3.4 --cache          # add --whois to also try whois
+cat data/ip_ownership.csv
 ```
 
 ## Performance Tuning
 
-### Reducing CPU Usage
+The router is weak, so keep it light.
 
-If InstaMonitor is using too much CPU:
-
-1. **Increase analysis interval** (analyze less frequently):
-```bash
-vi config.conf
-# Change: ANALYSIS_INTERVAL=10
-# To:     ANALYSIS_INTERVAL=30
+**Lower CPU:**
+```sh
+# config.conf
+ANALYSIS_INTERVAL=30     # analyze less often (from 10)
+SNAPSHOT_LENGTH=64       # capture fewer header bytes (from 96)
 ```
 
-2. **Reduce snapshot length** (capture fewer bytes):
-```bash
-# Change: SNAPSHOT_LENGTH=96
-# To:     SNAPSHOT_LENGTH=64
+**Lower memory:**
+```sh
+# config.conf
+BUFFER_SIZE=5000         # smaller capture buffer (from 10000)
+FLOW_TIMEOUT=30          # evict/flush flows sooner (from 60)
 ```
 
-3. **Limit to specific devices** (modify capture filter):
-```bash
-vi capture.sh
-# Add device filter in build_filter function
-```
+**Keep IP resolution cheap:** leave `IP_FILTER_USE_WHOIS=false` (reverse DNS
+only). Each IP is resolved once and cached, so steady-state overhead is minimal.
 
-### Reducing Memory Usage
-
-1. **Decrease buffer size**:
-```bash
-vi config.conf
-# Change: BUFFER_SIZE=10000
-# To:     BUFFER_SIZE=5000
-```
-
-2. **Enable more aggressive cleanup**:
-```bash
-vi config.conf
-# Change: MAX_STORAGE_MB=100
-# To:     MAX_STORAGE_MB=50
-```
-
-### Reducing Storage Usage
-
-1. **Enable automatic cleanup**:
-```bash
-vi config.conf
-# Ensure: AUTO_CLEANUP_ENABLED=true
-```
-
-2. **Clean old data manually** (archive, then keep only headers):
-```bash
-# Archive the current CSV files
-tar -czf data/backup-$(date +%Y%m).tar.gz data/*.csv
-
-# Keep only the header row of each CSV
-for f in data/*.csv; do
-    head -1 "$f" > "$f.new" && mv "$f.new" "$f"
-done
+**Limit when it runs** with cron:
+```sh
+0 7  * * * /root/instamonitor/run.sh > /root/instamonitor/data/instamonitor.log 2>&1 &
+0 23 * * * killall run.sh tcpdump analyzer.py
 ```
 
 ## Data Export
 
-### CSV Export
+Everything is already CSV in `./data/` — copy the files anywhere:
 
-The data is already in CSV format! The files are located in the `data/`
-directory inside the project:
-
-```bash
-# Copy all CSV files to your computer
-scp root@router:/path/to/instamonitor/data/*.csv ~/Downloads/
-
-# List the CSV files
-ssh root@router "ls -lh /path/to/instamonitor/data/"
-
-# View daily stats directly
-ssh root@router "cat /path/to/instamonitor/data/daily_stats.csv"
+```sh
+scp root@router:/root/instamonitor/data/*.csv ~/Downloads/
 ```
 
-### Using stats.py Export
+Or use `stats.py`:
 
-```bash
-# Export aggregated data
-./stats.py --export data/all_stats.csv
-
-# Export specific device
-./stats.py --device 192.168.1.100 --week --export data/device_stats.csv
+```sh
+./stats.py --today --export data/today.csv
+./stats.py --device 192.168.1.100 --week --export data/device_week.csv
 ```
 
-### Direct CSV Access
+Quick looks:
 
-```bash
-# Open in Excel/Google Sheets
-# Simply open the CSV files directly
-
-# View in terminal with column formatting
+```sh
 column -t -s, data/daily_stats.csv | less
-
-# Get specific platform data
-grep "instagram" data/daily_stats.csv
+grep instagram data/daily_stats.csv
 ```
 
-### Import Into Analysis Tools
+See [CSV_FORMAT.md](CSV_FORMAT.md) for importing into pandas, R, SQLite,
+Gnuplot, Excel, and more.
 
-See [CSV_FORMAT.md](CSV_FORMAT.md) for detailed examples of importing into:
-- Excel / Google Sheets
-- Python pandas
-- R
-- SQLite
-- Gnuplot
-- And more!
+### Automated daily report
 
-### Automated Reports
-
-Create a daily report script:
-
-```bash
+```sh
 cat > daily_report.sh << 'EOF'
 #!/bin/sh
+cd "$(dirname "$0")"
 DATE=$(date +%Y-%m-%d)
-REPORT="data/instamonitor_report_$DATE.txt"
-
-echo "InstaMonitor Daily Report - $DATE" > $REPORT
-echo "=======================================" >> $REPORT
-echo "" >> $REPORT
-
-./stats.py --today >> $REPORT
-
-# Optionally email or upload the report
-# mail -s "Daily InstaMonitor Report" user@example.com < $REPORT
+./stats.py --today > "data/report_$DATE.txt"
 EOF
-
 chmod +x daily_report.sh
 
-# Add to cron (run at midnight) - use the full path to the script
 echo "0 0 * * * $(pwd)/daily_report.sh" >> /etc/crontabs/root
 /etc/init.d/cron restart
 ```
 
-## Tips and Best Practices
+## Maintenance
 
-### Accuracy Tips
+- **Add training data** whenever accuracy drifts, then retrain and redeploy
+  `model.json`. This is the main lever for accuracy — not editing thresholds.
+- **Watch the logs** for capture or resolution errors.
+- **Archive old CSV** if storage gets tight:
+  ```sh
+  tar -czf data/backup-$(date +%Y%m).tar.gz data/*.csv
+  for f in data/flows.csv data/hourly_stats.csv; do head -1 "$f" > "$f.new" && mv "$f.new" "$f"; done
+  ```
+- **Refresh the IP cache** occasionally if ownership seems stale:
+  ```sh
+  : > data/ip_ownership.csv   # clears it; it rebuilds automatically (loses the header until next write)
+  ```
 
-1. **Keep IP lists updated** - Check monthly for changes
-2. **Monitor for 24 hours** - Patterns become clearer over time
-3. **Consider time zones** - Usage patterns vary by time of day
-4. **Multiple devices** - Compare patterns across devices
+## Privacy Reminder
 
-### Privacy Considerations
-
-1. **Inform users** - Let people know monitoring is active
-2. **Secure the database** - Protect stored data
-3. **Regular cleanup** - Don't keep data longer than needed
-4. **Access control** - Limit who can view statistics
-
-### Maintenance
-
-1. **Weekly** - Check logs for errors
-2. **Monthly** - Update IP addresses, clean old data
-3. **Quarterly** - Review and adjust classification thresholds
-4. **Yearly** - Full system review and optimization
-
-## Advanced Usage
-
-### Custom Classification Thresholds
-
-Adjust thresholds based on observed patterns:
-
-```bash
-vi config.conf
-
-# Make chat detection more sensitive
-CHAT_PACKET_SIZE_MAX=600
-CHAT_MAX_PACKETS_PER_SEC=30
-
-# Adjust video scroll detection
-SCROLL_MIN_AVG_SIZE=1200
-SCROLL_DOWNLOAD_RATIO=0.75
-```
-
-### Integration with Other Tools
-
-1. **Grafana Dashboard** - Visualize data over time
-2. **Home Assistant** - Track usage as sensor data
-3. **Custom Scripts** - Parse database for automation
-4. **Parental Controls** - Trigger alerts based on usage
-
-### Debugging Classification
-
-Enable detailed logging:
-
-```bash
-vi config.conf
-# Change: LOG_LEVEL=INFO
-# To:     LOG_LEVEL=DEBUG
-
-# Restart the run.sh launcher, then watch the output
-./run.sh
-```
-
-This will show detailed information about each flow and why it was classified a certain way.
+InstaMonitor reads metadata only — no decryption, no payloads, no content.
+Inform the people on your network, monitor only networks you're authorized to,
+and keep data no longer than you need it.

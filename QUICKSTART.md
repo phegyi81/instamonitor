@@ -1,267 +1,184 @@
 # Quick Start Guide
 
-Get InstaMonitor up and running in 5 minutes!
+Get InstaMonitor capturing, trained, and classifying. The one thing that makes
+this different from a plain packet sniffer: **you record a little labeled
+traffic first, train a model on your laptop, then let the router classify.**
 
 ## Prerequisites
 
-- OpenWrt router (tested on version 22.03+)
-- SSH access to your router
-- At least 50MB free storage space
-- Basic command-line knowledge
+- OpenWrt router (developed on 22.03) with SSH access
+- The phone whose Instagram/TikTok usage you want to classify, on your Wi-Fi
+- A laptop with Python 3 and internet (for `pip install scikit-learn`)
+- A few MB of free space on the router
 
-## Step 1: Transfer Files to Router
+## Step 1 — Copy the project to the router
 
-On your computer, from the `instamonitor` directory:
+From your computer, inside the `instamonitor` directory:
 
-```bash
+```sh
 # Replace 192.168.1.1 with your router's IP
-scp -r * root@192.168.1.1:/tmp/instamonitor/
+scp -r . root@192.168.1.1:/root/instamonitor/
 ```
 
-If the directory doesn't exist on the router:
-```bash
-ssh root@192.168.1.1 "mkdir -p /tmp/instamonitor"
-```
+## Step 2 — SSH in and install
 
-## Step 2: SSH into Router
-
-```bash
+```sh
 ssh root@192.168.1.1
-```
-
-## Step 3: Run Installation
-
-```bash
-cd /tmp/instamonitor
+cd /root/instamonitor
 sh install.sh
 ```
 
-The installer will:
-- Update package lists
-- Install required packages (Python3, tcpdump)
-- Create necessary directories
-- Copy configuration files
-- Install the `run.sh` launcher and stats utility
+`install.sh` runs `opkg update`, installs `python3-light`, `python3-decimal`,
+and `tcpdump`, and marks the scripts executable. Everything runs from this
+directory — nothing is written to `/etc`, `/var`, or `/tmp`.
 
-**This may take 5-10 minutes depending on your internet connection.**
+## Step 3 — Tell it which phone to watch
 
-> Prefer not to install? You can run everything straight from the source
-> directory: `sh run.sh config.conf`
-
-## Step 4: Verify Installation
-
-```bash
-# Check installed files
-ls -la /etc/instamonitor/
-
-# Test CSV storage module
-python3 /etc/instamonitor/database.py
+```sh
+vi config.conf
 ```
 
-## Step 5: Configure (Optional)
+Set at least:
 
-The default configuration works for most cases, but you can customize:
-
-```bash
-vi /etc/instamonitor/config.conf
+```sh
+CAPTURE_INTERFACE=br-lan          # usually the LAN bridge
+DEVICE_IPS=192.168.1.100          # the phone's LAN IP
 ```
 
-Key settings:
-- `CAPTURE_INTERFACE` - Your network interface (default: br-lan)
-- `ANALYSIS_INTERVAL` - How often to analyze (default: 10 seconds)
-- `DATA_DIR` - Where to store CSV files
+Give the phone a static DHCP lease so its IP doesn't change.
 
-## Step 6: Start Monitoring
+## Step 4 — Record labeled training sessions
 
-Run in the foreground (press Ctrl+C to stop):
+Do **one pure activity at a time**, with other apps closed, so the labels stay
+clean. Five minutes each is a good start; record more later to improve accuracy.
 
-```bash
-/etc/instamonitor/run.sh
+```sh
+./label.sh chat        300      # spend 5 min only chatting / DMs
+./label.sh video_call  300      # spend 5 min on a live / video call
+./label.sh reels       300      # spend 5 min only scrolling reels/TikToks
+./label.sh other       300      # normal usage with NO Instagram/TikTok open
 ```
 
-Or run in the background and log the output:
+Each run appends feature rows (tagged with the label) to
+`data/training_data.csv`. The `other` session is important — it teaches the
+model what background traffic looks like so it isn't forced into a real class.
 
-```bash
-/etc/instamonitor/run.sh > /var/log/instamonitor.log 2>&1 &
+Check what you've collected:
+
+```sh
+cut -d, -f26 data/training_data.csv | sort | uniq -c   # counts per label
 ```
 
-## Step 7: Verify It's Working
+## Step 5 — Train the model (on your laptop)
 
-Check processes:
-```bash
-ps | grep -E "(capture|analyzer|tcpdump)"
+`scikit-learn` is too heavy for the router, so train on your laptop and copy
+back only the small `model.json`.
+
+```sh
+# On the laptop:
+scp root@192.168.1.1:/root/instamonitor/data/training_data.csv .
+scp root@192.168.1.1:/root/instamonitor/features.py .
+scp root@192.168.1.1:/root/instamonitor/train.py .
+
+pip install scikit-learn
+./train.py --input training_data.csv --output model.json
+
+# Copy the trained model back to the router:
+scp model.json root@192.168.1.1:/root/instamonitor/
 ```
 
-You should see:
-- `capture.sh` - Capturing packets
-- `analyzer.py` - Analyzing traffic
-- `tcpdump` - Actual packet capture
+`train.py` prints a classification report, confusion matrix, cross-validation
+accuracy, and feature importances so you can judge quality before deploying.
 
-Watch real-time analysis (foreground run prints to the terminal, or tail your log file):
-```bash
-tail -f /var/log/instamonitor.log
+## Step 6 — Start monitoring
+
+```sh
+# Foreground (Ctrl+C to stop)
+./run.sh
+
+# Or background, logging to a file
+./run.sh > data/instamonitor.log 2>&1 &
 ```
 
-## Step 8: Test with Real Traffic
+Confirm it's running:
 
-1. Use Instagram or TikTok on a device connected to your WiFi
-2. Scroll through videos for 30-60 seconds
-3. Check the statistics:
-
-```bash
-instamonitor-stats --today
+```sh
+ps | grep -E "(capture|analyzer|tcpdump)" | grep -v grep
 ```
 
-You should see entries for:
-- Platform (instagram/tiktok)
-- Activity type (chat/video_conference/video_scroll)
-- Duration and data usage
+You should see `capture.sh`, `analyzer.py`, and `tcpdump`.
 
-## Example Output
+## Step 7 — Generate some traffic and check the stats
+
+1. Use Instagram/TikTok on the monitored phone for a minute or two.
+2. Wait for flows to finish (a flow is recorded after `FLOW_TIMEOUT` idle
+   seconds, default 60), or stop with Ctrl+C to flush everything.
+3. View the results:
+
+```sh
+./stats.py --today
+```
+
+### Example output
 
 ```
 Statistics for all devices
-Period: 2026-07-02 to 2026-07-02
+Period: 2026-07-07 to 2026-07-07
 
 ================================================================================
-Platform     Activity             Duration        Data            Sessions  
+Platform     Activity             Duration        Data            Sessions
 ================================================================================
-instagram    video_scroll         00:02:30        45.75 MB        1         
-tiktok       video_scroll         00:01:45        38.50 MB        1         
+instagram    reels                00:02:30        45.75 MB        1
+tiktok       reels                00:01:45        38.50 MB        1
+instagram    chat                 00:00:40        0.12 MB         3
 ================================================================================
-TOTAL                             00:04:15        84.25 MB                 
+TOTAL                             00:04:55        84.37 MB
 ================================================================================
 ```
 
-## Troubleshooting Quick Checks
+## Running Without a Model
 
-### Nothing being captured?
+If `model.json` isn't present yet, the analyzer falls back to a simple built-in
+heuristic so you still get *something* — but the whole point is the trained
+model, so record data and train as soon as you can.
 
-1. **Check interface name:**
-```bash
-ifconfig
-# Update CAPTURE_INTERFACE in config.conf if needed
+## Quick Troubleshooting
+
+**Nothing captured?** Check the interface name and that the phone's IP matches:
+
+```sh
+ifconfig                       # find the LAN bridge (often br-lan)
+tcpdump -i br-lan -c 10 -n     # confirm you see traffic
 ```
 
-2. **Test tcpdump manually:**
-```bash
-tcpdump -i br-lan -c 10
-```
+**Everything classified `unknown`?** Either there's no `model.json`, the model
+needs more/better training data, or `CONFIDENCE_THRESHOLD` is too high. Record
+more labeled sessions and retrain.
 
-### No classifications?
+**Flows dropped unexpectedly?** `DROP_CONFIRMED_OTHER=true` removes flows proven
+unrelated to Instagram/TikTok. Set it to `false` in `config.conf` to keep
+everything while you debug.
 
-1. **Check if IP addresses are correct:**
-```bash
-cat /etc/instamonitor/instagram_ips.txt
-cat /etc/instamonitor/tiktok_ips.txt
-```
+More in [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
-2. **Update IP addresses:**
-```bash
-sh /etc/instamonitor/update_ips.sh
-# Choose option 1 or 2 to discover current IPs
-```
+## Useful Commands
 
-### High CPU usage?
-
-1. **Increase analysis interval:**
-```bash
-vi /etc/instamonitor/config.conf
-# Set: ANALYSIS_INTERVAL=30
-# Then stop (Ctrl+C) and restart run.sh
+```sh
+./run.sh                                   # start (foreground)
+killall run.sh tcpdump analyzer.py         # stop a background run
+./stats.py --today                         # today's summary
+./stats.py --device 192.168.1.100 --week   # one device, this week
+./stats.py --today --export data/today.csv # export a report
+tail -f data/instamonitor.log              # watch a background run
+./label.sh reels 300                       # add more training data
 ```
 
 ## Next Steps
 
-Now that InstaMonitor is running:
+- **[USAGE.md](USAGE.md)** — full guide: monitoring, stats, tuning, exporting
+- **[CSV_FORMAT.md](CSV_FORMAT.md)** — exact CSV schemas
+- **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** — problem solving
+- **[PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md)** — architecture and design
 
-1. **Monitor for 24 hours** to gather meaningful data
-2. **Review statistics daily** using `instamonitor-stats`
-3. **Update IP addresses monthly** using `update_ips.sh`
-4. **Tune classification** based on your observations
-
-## Useful Commands
-
-```bash
-# Start monitoring (foreground, Ctrl+C to stop)
-/etc/instamonitor/run.sh
-
-# Start in the background
-/etc/instamonitor/run.sh > /var/log/instamonitor.log 2>&1 &
-
-# Stop a background run
-killall run.sh tcpdump analyzer.py
-
-# View today's stats
-instamonitor-stats --today
-
-# View stats for specific device
-instamonitor-stats --device 192.168.1.100 --week
-
-# Export data
-instamonitor-stats --today --export /tmp/stats.csv
-
-# Watch live analysis (when running in the background)
-tail -f /var/log/instamonitor.log
-
-# Update IP addresses
-sh /etc/instamonitor/update_ips.sh
-```
-
-## Getting Help
-
-- **Detailed usage guide:** See [USAGE.md](USAGE.md)
-- **Troubleshooting:** See [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
-- **Understanding classifications:** See "Understanding Classifications" in USAGE.md
-
-## Important Notes
-
-### Privacy & Legal
-
-- Inform users that network monitoring is active
-- Only use on networks you have authority to monitor
-- Comply with local privacy laws
-
-### Accuracy
-
-- Classifications are based on traffic patterns, not packet content
-- Accuracy improves over time as patterns become clearer
-- Some activities may be misclassified initially
-- Update IP addresses regularly for best results
-
-### Performance
-
-- Designed for routers with 64MB+ RAM
-- Uses ~5-15% CPU on typical hardware
-- Monitor resource usage: `top` command
-- Tune settings if experiencing issues
-
-## Advantages of CSV Format
-
-✅ **Universal compatibility** - Works with Excel, Google Sheets, databases, programming languages  
-✅ **Human readable** - Can view/edit with any text editor  
-✅ **Easy to backup** - Simple file copy  
-✅ **No dependencies** - No need for SQLite or other databases  
-✅ **Portable** - Transfer between systems easily  
-✅ **Tool agnostic** - Use any analysis tool you prefer  
-✅ **Simple** - No complex queries needed for basic analysis  
-✅ **Lightweight** - Smaller than many database formats  
-✅ **Debuggable** - Easy to inspect and validate data  
-
-See [CSV_FORMAT.md](CSV_FORMAT.md) for complete format documentation and analysis examples.
-
-## Success Checklist
-
-- [ ] Installation completed without errors
-- [ ] `run.sh` starts and runs
-- [ ] Packet capture is working (packet log file growing)
-- [ ] Analyzer is running (output shows classifications)
-- [ ] CSV files are being updated
-- [ ] Statistics command shows data
-- [ ] Classifications appear reasonable
-
-If all items are checked, you're all set! 🎉
-
----
-
-**Need help?** Check [TROUBLESHOOTING.md](TROUBLESHOOTING.md) or create an issue on GitHub.
+Record more labeled data over time and retrain — that's what steadily improves
+accuracy.
