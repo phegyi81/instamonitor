@@ -1,9 +1,0 @@
-I would like a system to monitor Instagram and TikTok usage happening through my wifi access point. What I would like to know is that how much time is spent by chatting, by videconferencing or by just scrolling videos on these platforms. I want these data to be collected and stored in a database for analysis.
-
-I know that the data carried in the packages is raw data and it is the most likely encrypted, so I cannot see the content of the messages or videos. However, I can analyze the traffic patterns and metadata to infer usage statistics.
-
-I think that when the user chats, then the traffic will consist of small packets being sent and received frequently, while video conferencing will generate larger packets with a more consistent flow. Scrolling through videos may show bursts of data as new content is loaded. So I would like to create a classification of traffic patterns based on packet size, frequency, and timing to categorize the type of activity.
-
-The accesspoint is a Netgear WNDR3700 v4, running OpenWrt 22.03.2 r19803-9a599fee93 / LuCI openwrt-22.03 branch git-22.288.45147-96ec0cd So I can install packages and run scripts.
-
-I think the packages should be filtered coming from and going to the IP addresses associated with Instagram and TikTok servers. How should I use tools like tcpdump or Wireshark to capture the traffic and analyze the packet sizes, frequencies, and timing, in a way not to put too much load on the access point?
